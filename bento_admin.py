@@ -167,14 +167,22 @@ def ai_ng_probability_percent(img_bgr: np.ndarray) -> float:
 # =========================
 st.set_page_config(page_title="スカスカ弁当 判定管理", layout="wide")
 
+# CSS修正: ロゴが切れないように padding-top を 0.5rem に減らし、全体の位置を調整
 st.markdown("""
 <style>
     .block-container { 
-        padding-top: 2rem !important; 
+        padding-top: 0.5rem !important; 
         padding-bottom: 2rem;
         max-width: 1200px; 
     }
     
+    .header-box {
+        display: flex;
+        align-items: center;
+        padding-top: 10px;
+        margin-bottom: 20px;
+    }
+
     .custom-card {
         background: white;
         border: 1px solid rgba(49,51,63,.15);
@@ -189,19 +197,21 @@ st.markdown("""
 
     [data-testid="stVerticalBlock"] { gap: 0.8rem !important; }
     
+    /* 検索ボックス等を隠す */
     div[data-testid="stSelectbox"], div[data-testid="stTextInput"] { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- ヘッダー（ロゴとタイトル） ---
-col_head1, col_head2 = st.columns([1, 4])
+col_head1, col_head2 = st.columns([1.5, 4])
 with col_head1:
     try:
-        st.image("header1_pc.png", width=180)
+        # ロゴを表示（paddingの影響を受けないよう配置）
+        st.image("header1_pc.png", width=220)
     except:
-        st.write("LOGO")
+        st.write("### GLUG")
 with col_head2:
-    st.markdown("<h1 style='margin:0; padding-top:10px;'>スカスカ弁当 判定管理</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='margin:0; padding-top:15px; font-size: 2.2rem;'>スカスカ弁当 判定管理</h1>", unsafe_allow_html=True)
 
 st.caption("画像をアップロードし、表の行をクリックするとプレビューが切り替わります。")
 
@@ -292,7 +302,7 @@ with col_right:
     m2.metric("AI判定NG率", f"{row.get('AI判定NG率')}%")
     m3.metric("判定", row.get("判定"))
 
-    # 単体保存ボタンの追加
+    # 単体保存ボタン
     if selected_file in original_images:
         img_to_save = original_images[selected_file]
         is_success, buffer = cv2.imencode(".jpg", img_to_save)
