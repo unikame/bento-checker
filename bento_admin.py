@@ -230,7 +230,7 @@ params = {
     "close_holes_kernel": 5, "close_holes_iter": 2,
     "fill_micro_gaps_kernel": 15, "fill_micro_gaps_iter": 1,
 }
-
+st.write("")
 uploads = st.file_uploader("画像をアップロードしてください", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
 
 if not uploads:
@@ -326,6 +326,7 @@ with col_right:
 
 st.divider()
 st.caption("💡 運用：学習用データとして残したい写真は「📥 この画像を保存」ボタンでデスクトップに保存してください。")
+
 
 
 
