@@ -207,7 +207,7 @@ col_head1, col_head2 = st.columns([1.5, 4])
 with col_head1:
     try:
         # ロゴを表示（paddingの影響を受けないよう配置）
-        st.image("header1_pc.png", width=200)
+        st.image("header1_pc.png", width=190)
     except:
         st.write("### GLUG")
 with col_head2:
@@ -326,6 +326,7 @@ with col_right:
 
 st.divider()
 st.caption("💡 運用：学習用データとして残したい写真は「📥 この画像を保存」ボタンでデスクトップに保存してください。")
+
 
 
 
