@@ -211,7 +211,7 @@ with col_head1:
     except:
         st.write("### GLUG")
 with col_head2:
-    st.markdown("<h1 style='margin:0; padding-top:15px; font-size: 2.2rem;'>スカスカ弁当 判定管理</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='margin:0; padding-top:5px; font-size: 2.2rem;'>スカスカ弁当 判定管理</h1>", unsafe_allow_html=True)
 
 st.caption("画像をアップロードし、表の行をクリックするとプレビューが切り替わります。")
 
@@ -326,6 +326,7 @@ with col_right:
 
 st.divider()
 st.caption("💡 運用：学習用データとして残したい写真は「📥 この画像を保存」ボタンでデスクトップに保存してください。")
+
 
 
 
