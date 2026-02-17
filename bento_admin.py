@@ -170,17 +170,11 @@ st.set_page_config(page_title="スカスカ弁当 判定管理", layout="wide")
 st.markdown("""
 <style>
     .block-container { 
-        padding-top: 4.5rem !important; 
+        padding-top: 2rem !important; 
         padding-bottom: 2rem;
         max-width: 1200px; 
     }
     
-    h1 {
-        margin-top: 1rem !important;
-        margin-bottom: 0.5rem !important;
-        padding-top: 0px !important;
-    }
-
     .custom-card {
         background: white;
         border: 1px solid rgba(49,51,63,.15);
@@ -199,7 +193,16 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🍱 スカスカ弁当 判定管理")
+# --- ヘッダー（ロゴとタイトル） ---
+col_head1, col_head2 = st.columns([1, 4])
+with col_head1:
+    try:
+        st.image("header1_pc.png", width=180)
+    except:
+        st.write("LOGO")
+with col_head2:
+    st.markdown("<h1 style='margin:0; padding-top:10px;'>スカスカ弁当 判定管理</h1>", unsafe_allow_html=True)
+
 st.caption("画像をアップロードし、表の行をクリックするとプレビューが切り替わります。")
 
 with st.sidebar:
@@ -227,11 +230,14 @@ if not uploads:
 # --- 解析フェーズ ---
 results = []
 debug_images = {}
+original_images = {}
 
 for up in uploads:
     try:
         up.seek(0)
         img_bgr = read_upload_to_bgr(up)
+        original_images[up.name] = img_bgr.copy()
+        
         ratio, b_mask, f_mask, e_mask = calc_empty_ratio_and_debug(img_bgr, params)
         ai_p = ai_ng_probability_percent(img_bgr)
         j = judge(ratio, ok_th, warn_th)
@@ -256,35 +262,28 @@ col_left, col_right = st.columns([1.2, 1.0], gap="large")
 
 with col_left:
     st.subheader("📋 判定結果一覧")
-    st.caption("行をクリックすると、右側のプレビューが切り替わります。")
-    
-    # 修正箇所: selection_mode を "single-row" に変更
     selection = st.dataframe(
         df, 
         use_container_width=True, 
         hide_index=True,
         on_select="rerun",  
-        selection_mode="single-row"  # ハイフンに修正
+        selection_mode="single-row"
     )
     
-    st.download_button("⬇️ CSV保存", data=df_to_csv_bytes(df), file_name="result.csv", mime="text/csv", use_container_width=True)
+    st.download_button("⬇️ 全判定CSVを保存", data=df_to_csv_bytes(df), file_name="result.csv", mime="text/csv", use_container_width=True)
     if debug_preview:
-        st.download_button("⬇️ 全データ(ZIP)保存", data=build_zip(df, debug_images), file_name="debug_data.zip", use_container_width=True)
+        st.download_button("⬇️ 解析全データ(ZIP)を保存", data=build_zip(df, debug_images), file_name="debug_data.zip", use_container_width=True)
 
 with col_right:
-    # 選択状況の取得
     selected_rows = selection.get("selection", {}).get("rows", [])
     selected_idx = selected_rows[0] if selected_rows else 0
-    
-    # 選択された行のデータを取得
     selected_file = df.iloc[selected_idx]["ファイル名"]
     row = df.iloc[selected_idx]
 
     st.markdown(f"""
     <div class="custom-card">
         <div class="card-title">🔍 プレビュー: {selected_file}</div>
-        <div class="card-sub">表で選択中の結果を表示しています。</div>
-        <div style="font-weight: bold; font-size: 0.9rem; margin-bottom: 10px;">📌 判定サマリー</div>
+        <div class="card-sub">選択中の画像の判定詳細です。</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -293,8 +292,20 @@ with col_right:
     m2.metric("AI判定NG率", f"{row.get('AI判定NG率')}%")
     m3.metric("判定", row.get("判定"))
 
+    # 単体保存ボタンの追加
+    if selected_file in original_images:
+        img_to_save = original_images[selected_file]
+        is_success, buffer = cv2.imencode(".jpg", img_to_save)
+        if is_success:
+            st.download_button(
+                label=f"📥 この画像をデスクトップに保存 ({row.get('判定')})",
+                data=buffer.tobytes(),
+                file_name=f"{row.get('判定')}_{selected_file}",
+                mime="image/jpeg",
+                use_container_width=True
+            )
+
     if debug_preview and selected_file in debug_images:
-        st.write("")
         imgs = debug_images[selected_file]
         st.image(imgs["overlay"], caption=f"食材オーバーレイ ({selected_file})", use_container_width=True)
         
@@ -304,4 +315,4 @@ with col_right:
         c3.image(imgs["empty"], caption="空白領域", use_container_width=True)
 
 st.divider()
-st.caption("💡 運用：表で特定のファイルを詳しく確認したい時にクリックしてください。")
+st.caption("💡 運用：学習用データとして残したい写真は「📥 この画像を保存」ボタンでデスクトップに保存してください。")
