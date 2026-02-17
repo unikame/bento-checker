@@ -171,7 +171,7 @@ st.set_page_config(page_title="スカスカ弁当 判定管理", layout="wide")
 st.markdown("""
 <style>
     .block-container { 
-        padding-top: 0.5rem !important; 
+        padding-top: 7.5rem !important; 
         padding-bottom: 2rem;
         max-width: 1200px; 
     }
@@ -326,3 +326,4 @@ with col_right:
 
 st.divider()
 st.caption("💡 運用：学習用データとして残したい写真は「📥 この画像を保存」ボタンでデスクトップに保存してください。")
+
