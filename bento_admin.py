@@ -167,22 +167,15 @@ def ai_ng_probability_percent(img_bgr: np.ndarray) -> float:
 # =========================
 st.set_page_config(page_title="スカスカ弁当 判定管理", layout="wide")
 
-# CSS修正: ロゴが切れないように padding-top を 0.5rem に減らし、全体の位置を調整
+# CSS修正: padding-top を最小限にして画像が切れるのを防ぐ
 st.markdown("""
 <style>
     .block-container { 
-        padding-top: 3.0rem !important; 
+        padding-top: 0.5rem !important; 
         padding-bottom: 2rem;
         max-width: 1200px; 
     }
     
-    .header-box {
-        display: flex;
-        align-items: center;
-        padding-top: 10px;
-        margin-bottom: 20px;
-    }
-
     .custom-card {
         background: white;
         border: 1px solid rgba(49,51,63,.15);
@@ -203,15 +196,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- ヘッダー（ロゴとタイトル） ---
-col_head1, col_head2 = st.columns([1.5, 4])
+col_head1, col_head2 = st.columns([1, 4])
 with col_head1:
     try:
-        # ロゴを表示（paddingの影響を受けないよう配置）
+        # ロゴを最上部に隙間なく配置
         st.image("header1_pc.png", width=190)
     except:
         st.write("### GLUG")
 with col_head2:
-    st.markdown("<h1 style='margin:0; padding-top:5px; font-size: 2.2rem;margin-left:-30px;'>スカスカ弁当 判定管理</h1>", unsafe_allow_html=True)
+    # ロゴの高さに合わせて padding-top を 12px に調整
+    st.markdown("<h1 style='margin:0; padding-top:12px; font-size: 2.2rem; margin-left:-40px;'>スカスカ弁当 判定管理</h1>", unsafe_allow_html=True)
 
 st.caption("画像をアップロードし、表の行をクリックするとプレビューが切り替わります。")
 
@@ -326,16 +320,3 @@ with col_right:
 
 st.divider()
 st.caption("💡 運用：学習用データとして残したい写真は「📥 この画像を保存」ボタンでデスクトップに保存してください。")
-
-
-
-
-
-
-
-
-
-
-
-
-
