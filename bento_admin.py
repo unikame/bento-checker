@@ -208,9 +208,10 @@ with col_r:
     # 選択された行の画像を表示（デフォルトは1枚目）
     selected_rows = selection.get("selection", {}).get("rows", [])
     idx = selected_rows[0] if selected_rows else 0
-    fname = df.iloc[idx]["ファイル名"]
-    
-    st.subheader(f"🔍 解析プレビュー: {fname}")
-    if fname in previews:
-        st.image(previews[fname], use_container_width=True)
-        st.info("※ 枠線で囲まれた各エリア内の数値を計算しています。")
+    if not df.empty:
+        fname = df.iloc[idx]["ファイル名"]
+        
+        st.subheader(f"🔍 解析プレビュー: {fname}")
+        if fname in previews:
+            st.image(previews[fname], use_container_width=True)
+            st.info("※ 枠線で囲まれた各エリア内の数値を計算しています。")
