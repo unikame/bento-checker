@@ -77,7 +77,7 @@ TEMPLATES: Dict[str, List[Tuple[str, float, float, float, float]]] = {
         ("左下", 0.03, 0.52, 0.74, 0.95),
         ("右下", 0.76, 0.52, 0.98, 0.95),
     ],
-    # 角丸・正方形寄り、または縦が強い容器向け（下段を広めに）
+    # 正方形寄り、または縦が強い容器向け（下段を広めに）
     "square_4": [
         ("左上", 0.05, 0.07, 0.38, 0.48),
         ("右上", 0.40, 0.07, 0.95, 0.48),
@@ -89,12 +89,10 @@ TEMPLATES: Dict[str, List[Tuple[str, float, float, float, float]]] = {
 def select_template_auto(bbox: Tuple[int,int,int,int]) -> str:
     """
     bboxの縦横比でテンプレを自動選択
-    ※閾値は運用しながら微調整でOK
     """
     _, _, w, h = bbox
     ratio = w / max(1, h)
 
-    # ざっくり分類
     if ratio >= 1.85:
         return "wide_4"
     elif ratio >= 1.35:
@@ -124,7 +122,7 @@ def build_compartments_from_template(
         m = np.zeros_like(bento_mask)
         cv2.rectangle(m, (x0, y0), (x1, y1), 255, thickness=-1)
 
-        # 容器外に出ないようクリップ（多少bento_maskがズレても枠はbbox基準なので安定）
+        # 容器外に出ないようクリップ
         m = cv2.bitwise_and(m, bento_mask)
 
         comps.append((name, (x0, y0, x1, y1), m))
@@ -132,7 +130,7 @@ def build_compartments_from_template(
     return comps
 
 # =========================
-# 描画＆計算
+# 描画＆計算（文字サイズ自動調整版）
 # =========================
 
 def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray):
@@ -160,14 +158,28 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray):
         color = colors[i % len(colors)]
         cv2.rectangle(output, (x0, y0), (x1, y1), color, thickness=12)
 
-        # 表示は矩形中心（マスク形状に引っ張られない）
+        # --- 文字サイズを枠サイズで自動調整 ---
+        box_w = x1 - x0
+        box_h = y1 - y0
+        box_size = max(1, min(box_w, box_h))
+
+        font_scale = box_size / 200.0
+        font_scale = max(0.8, min(font_scale, 2.5))
+
+        thickness_main = max(2, int(font_scale * 3))
+        thickness_border = max(6, int(font_scale * 8))
+
         cx = int((x0 + x1) / 2)
         cy = int((y0 + y1) / 2)
         txt = f"{ratio_int}%"
 
-        # 縁取り
-        cv2.putText(output, txt, (cx - 70, cy + 20), cv2.FONT_HERSHEY_SIMPLEX, 3.0, (0, 0, 0), 18, cv2.LINE_AA)
-        cv2.putText(output, txt, (cx - 70, cy + 20), cv2.FONT_HERSHEY_SIMPLEX, 3.0, (255, 255, 255), 6, cv2.LINE_AA)
+        (text_w, text_h), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness_main)
+        tx = cx - text_w // 2
+        ty = cy + text_h // 2
+
+        # 縁取り → 本体
+        cv2.putText(output, txt, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness_border, cv2.LINE_AA)
+        cv2.putText(output, txt, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness_main, cv2.LINE_AA)
 
         res_txts.append((name, ratio))
 
@@ -214,16 +226,13 @@ if uploads:
 
             f_mask = get_food_mask(img, b_mask, v_min, s_max)
 
-            # --- テンプレ選択（Auto or 手動） ---
             template_key = select_template_auto(bbox) if mode == "Auto" else mode
             comps = build_compartments_from_template(b_mask, bbox, template_key)
 
             render, area_details = draw_results(img, comps, f_mask)
 
-            # 全体空白率
             total_ratio = (np.count_nonzero(b_mask) - np.count_nonzero(f_mask)) / max(1, np.count_nonzero(b_mask)) * 100.0
 
-            # エリア別表示（順番固定: テンプレ定義順）
             area_str = ", ".join([f"{name}:{int(round(r))}%" for name, r in area_details])
 
             results.append({
