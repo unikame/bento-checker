@@ -4,11 +4,11 @@ import pandas as pd
 import streamlit as st
 from typing import Optional, Tuple, List, Dict
 
-# =========================
-# 容器検出（マスク + 外接矩形）
-# =========================
+# =========================================================
+# 1) 容器検出（マスク + 外接矩形）
+# =========================================================
 
-def get_bento_mask_and_bbox(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[Tuple[int,int,int,int]]]:
+def get_bento_mask_and_bbox(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[Tuple[int, int, int, int]]]:
     """
     容器（トレー）の最大輪郭を狙ってマスク化し、外接矩形(bbox)も返す
     bbox = (x, y, w, h)
@@ -27,7 +27,9 @@ def get_bento_mask_and_bbox(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarray], 
 
     c = max(cnts, key=cv2.contourArea)
     area = cv2.contourArea(c)
-    if area < (H * W * 0.15):
+
+    # 小さすぎる輪郭しかない場合は失敗扱い
+    if area < (H * W * 0.12):
         return None, None
 
     x, y, w, h = cv2.boundingRect(c)
@@ -40,9 +42,9 @@ def get_bento_mask_and_bbox(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarray], 
 
     return mask, (x, y, w, h)
 
-# =========================
-# 食材マスク
-# =========================
+# =========================================================
+# 2) 食材マスク
+# =========================================================
 
 def get_food_mask(img_bgr: np.ndarray, bento_mask: np.ndarray, v_min: int, s_max: int) -> np.ndarray:
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
@@ -51,69 +53,42 @@ def get_food_mask(img_bgr: np.ndarray, bento_mask: np.ndarray, v_min: int, s_max
     s = hsv[:, :, 1]
     _, color_mask = cv2.threshold(s, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # 明度で白物（ご飯）を拾う
+    # 明度で白物（ご飯）を拾う（容器の白も拾いやすいので閾値で調整）
     rice_mask = cv2.inRange(hsv, (0, 0, v_min), (180, s_max, 255))
+
+    # 少し安定化（白ノイズの穴埋め＆平滑化）
+    kernel = np.ones((5, 5), np.uint8)
+    rice_mask = cv2.morphologyEx(rice_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+    rice_mask = cv2.medianBlur(rice_mask, 5)
 
     combined = cv2.bitwise_or(color_mask, rice_mask)
     combined = cv2.bitwise_and(combined, combined, mask=bento_mask)
     return combined
 
-# =========================
-# テンプレ定義（比率指定）
-# =========================
+# =========================================================
+# 3) 4分割（この容器専用：固定テンプレ）
+# =========================================================
+
 # rect = (name, left, top, right, bottom)  ※ 0-1比率
-TEMPLATES: Dict[str, List[Tuple[str, float, float, float, float]]] = {
-    # いまの弁当（添付に近い4枠）
-    "normal_4": [
-        ("左上", 0.03, 0.06, 0.35, 0.50),
-        ("右上", 0.36, 0.06, 0.97, 0.50),
-        ("左下", 0.03, 0.52, 0.72, 0.95),
-        ("右下", 0.74, 0.52, 0.97, 0.95),
-    ],
-    # 横に長い容器向け（上段を少し薄く/横長寄せ）
-    "wide_4": [
-        ("左上", 0.03, 0.08, 0.33, 0.48),
-        ("右上", 0.34, 0.08, 0.98, 0.48),
-        ("左下", 0.03, 0.52, 0.74, 0.95),
-        ("右下", 0.76, 0.52, 0.98, 0.95),
-    ],
-    # 正方形寄り、または縦が強い容器向け（下段を広めに）
-    "square_4": [
-        ("左上", 0.05, 0.07, 0.38, 0.48),
-        ("右上", 0.40, 0.07, 0.95, 0.48),
-        ("左下", 0.05, 0.52, 0.70, 0.95),
-        ("右下", 0.73, 0.52, 0.95, 0.95),
-    ],
-}
+TEMPLATE_FIXED_4: List[Tuple[str, float, float, float, float]] = [
+    ("左上", 0.04, 0.06, 0.34, 0.48),
+    ("右上", 0.35, 0.06, 0.96, 0.48),
+    ("左下", 0.04, 0.52, 0.70, 0.95),
+    ("右下", 0.72, 0.52, 0.96, 0.95),
+]
 
-def select_template_auto(bbox: Tuple[int,int,int,int]) -> str:
-    """
-    bboxの縦横比でテンプレを自動選択
-    """
-    _, _, w, h = bbox
-    ratio = w / max(1, h)
-
-    if ratio >= 1.85:
-        return "wide_4"
-    elif ratio >= 1.35:
-        return "normal_4"
-    else:
-        return "square_4"
-
-def build_compartments_from_template(
+def build_compartments_fixed_4(
     bento_mask: np.ndarray,
-    bbox: Tuple[int,int,int,int],
-    template_key: str
-) -> List[Tuple[str, Tuple[int,int,int,int], np.ndarray]]:
+    bbox: Tuple[int, int, int, int],
+) -> List[Tuple[str, Tuple[int, int, int, int], np.ndarray]]:
     """
-    テンプレ(比率) + bboxから、区画の矩形とマスクを作る
+    固定テンプレ(比率) + bboxから、区画の矩形とマスクを作る
     return: [(name, (x0,y0,x1,y1), mask), ...]
     """
     x, y, w, h = bbox
-    rects = TEMPLATES[template_key]
 
     comps = []
-    for name, l, t, r, b in rects:
+    for name, l, t, r, b in TEMPLATE_FIXED_4:
         x0 = int(x + l * w)
         y0 = int(y + t * h)
         x1 = int(x + r * w)
@@ -129,9 +104,9 @@ def build_compartments_from_template(
 
     return comps
 
-# =========================
-# 描画＆計算（文字サイズ自動調整版）
-# =========================
+# =========================================================
+# 4) 描画＆計算（文字サイズ自動調整）
+# =========================================================
 
 def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray):
     output = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
@@ -142,8 +117,6 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray):
         (255, 255, 255), # 白
         (255, 0, 0),     # 赤
         (255, 255, 0),   # 黄
-        (255, 0, 255),
-        (0, 165, 255),
     ]
 
     for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
@@ -155,13 +128,14 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray):
         ratio = max(0.0, (area_px - food_px) / area_px * 100.0)
         ratio_int = int(round(ratio))
 
+        # 枠線
         color = colors[i % len(colors)]
-        cv2.rectangle(output, (x0, y0), (x1, y1), color, thickness=12)
+        cv2.rectangle(output, (x0, y0), (x1, y1), color, thickness=10)
 
         # --- 文字サイズを枠サイズで自動調整 ---
-        box_w = x1 - x0
-        box_h = y1 - y0
-        box_size = max(1, min(box_w, box_h))
+        box_w = max(1, x1 - x0)
+        box_h = max(1, y1 - y0)
+        box_size = min(box_w, box_h)
 
         font_scale = box_size / 200.0
         font_scale = max(0.8, min(font_scale, 2.5))
@@ -169,6 +143,7 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray):
         thickness_main = max(2, int(font_scale * 3))
         thickness_border = max(6, int(font_scale * 8))
 
+        # 中央寄せ
         cx = int((x0 + x1) / 2)
         cy = int((y0 + y1) / 2)
         txt = f"{ratio_int}%"
@@ -185,12 +160,13 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray):
 
     return output, res_txts
 
-# =========================
-# Streamlit UI
-# =========================
+# =========================================================
+# 5) Streamlit UI
+# =========================================================
 
-st.set_page_config(page_title="スカスカ弁当 判定管理", layout="wide")
-st.markdown("<h1 style='margin:0;'>スカスカ弁当 判定管理</h1>", unsafe_allow_html=True)
+st.set_page_config(page_title="スカスカ弁当 判定管理（4分割固定）", layout="wide")
+st.markdown("<h1 style='margin:0;'>スカスカ弁当 判定管理（4分割固定）</h1>", unsafe_allow_html=True)
+st.caption("※この版は「赤い4分割容器」専用です（テンプレ固定）")
 
 with st.sidebar:
     st.header("⚙️ 判定調整")
@@ -201,12 +177,11 @@ with st.sidebar:
     v_min = st.slider("ご飯の白さ (明度)", 0, 255, 170)
     s_max = st.slider("彩度上限", 0, 255, 70)
 
-    st.divider()
-    st.write("▼ 容器テンプレ")
-    mode = st.selectbox("テンプレ選択", ["Auto", "normal_4", "wide_4", "square_4"], index=0)
-    st.caption("Autoは容器の縦横比で自動判定します。ズレるときだけ手動で切替。")
-
-uploads = st.file_uploader("画像をアップロードしてください", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+uploads = st.file_uploader(
+    "画像をアップロードしてください",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=True
+)
 
 if uploads:
     results = []
@@ -226,18 +201,19 @@ if uploads:
 
             f_mask = get_food_mask(img, b_mask, v_min, s_max)
 
-            template_key = select_template_auto(bbox) if mode == "Auto" else mode
-            comps = build_compartments_from_template(b_mask, bbox, template_key)
+            # ★ 4分割固定テンプレで区画生成
+            comps = build_compartments_fixed_4(b_mask, bbox)
 
             render, area_details = draw_results(img, comps, f_mask)
 
+            # 全体空白率
             total_ratio = (np.count_nonzero(b_mask) - np.count_nonzero(f_mask)) / max(1, np.count_nonzero(b_mask)) * 100.0
 
+            # エリア別表示（固定順）
             area_str = ", ".join([f"{name}:{int(round(r))}%" for name, r in area_details])
 
             results.append({
                 "ファイル名": up.name,
-                "テンプレ": template_key,
                 "全体空白率": f"{total_ratio:.1f}%",
                 "エリア別": area_str,
                 "判定": "OK" if total_ratio < ok_limit else "NG"
