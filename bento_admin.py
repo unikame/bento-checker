@@ -190,21 +190,20 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         ratio_int = int(round(ratio))
         txt = f"{ratio_int}%"
 
-        # テキストサイズ
-        try:
-            tb = draw.textbbox((0, 0), txt, font=font)
-            text_w = tb[2] - tb[0]
-            text_h = tb[3] - tb[1]
-        except Exception:
-            text_w, text_h = draw.textsize(txt, font=font)
+     # テキストbbox取得（オフセット込みで扱う）
+tb = draw.textbbox((0, 0), txt, font=font)
+# tb = (left, top, right, bottom)  ※ left/topがマイナスになることがある
+left, top, right, bottom = tb
+text_w = right - left
+text_h = bottom - top
 
-        # 中央座標
-        cx = (x0 + x1) // 2
-        cy = (y0 + y1) // 2
+# 中央座標
+cx = (x0 + x1) // 2
+cy = (y0 + y1) // 2
 
-        # 文字の左上
-        tx = cx - text_w // 2
-        ty = cy - text_h // 2
+# 左上座標（bboxのオフセットを打ち消して中央合わせ）
+tx = cx - text_w // 2 - left
+ty = cy - text_h // 2 - top2
 
         # --- スタイリッシュなピル背景（半透明 + 角丸） ---
         pad_x = int(font_size * 0.35)
@@ -340,5 +339,6 @@ if uploads:
                 fname = df.iloc[idx]["ファイル名"]
                 st.subheader(f"🔍 解析結果: {fname}")
                 st.image(previews[fname], use_container_width=True)
+
 
 
