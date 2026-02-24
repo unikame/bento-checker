@@ -156,15 +156,19 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         ratio_int = int(round(ratio))
         txt = f"{ratio_int}%"
 
-        # --- フォントサイズ自動調整（枠サイズ基準） ---
-        box_w = max(1, x1 - x0)
-        box_h = max(1, y1 - y0)
-        box_size = min(box_w, box_h)
+# --- フォントサイズ自動調整（枠サイズ基準） ---
+box_w = max(1, x1 - x0)
+box_h = max(1, y1 - y0)
+box_size = min(box_w, box_h)
 
-        # だいたい枠の25%を文字サイズに
-        font_size = int(box_size * 0.25)
-        font_size = max(18, min(font_size, 120))
-        font = _load_font(font_path, font_size)
+# 変更前: font_size = int(box_size * 0.25)
+# ✅ 変更後: 0.36くらいが見栄え良い
+font_size = int(box_size * 0.36)
+font_size = max(26, min(font_size, 180))  # 最小/最大も少し引き上げ
+font = _load_font(font_path, font_size)
+
+# 縁取り（太さも少し強く）
+outline = max(3, int(font_size * 0.10))
 
         # テキストサイズ取得（Pillowの新旧に対応）
         try:
@@ -290,3 +294,4 @@ if uploads:
                 fname = df.iloc[idx]["ファイル名"]
                 st.subheader(f"🔍 解析結果: {fname}")
                 st.image(previews[fname], use_container_width=True)
+
