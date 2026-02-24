@@ -149,93 +149,68 @@ def build_compartments_fixed_4(
 # =========================================================
 
 def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: str):
-    """
-    - 枠線: OpenCV
-    - ラベル: PIL（anchor='mm'で確実に中央揃え）
-    - フォントサイズは固定で統一
-    """
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+# 数字と%を分離
+num_txt = str(ratio_int)
+pct_txt = "%"
 
-    colors = [
-        (0, 255, 0),
-        (255, 255, 255),
-        (255, 0, 0),
-        (255, 255, 0),
-    ]
+# フォント
+font_main = _load_font(font_path, font_size)
+font_pct = _load_font(font_path, int(font_size * 0.6))  # ←%だけ小さく
 
-    # 枠線（少し細め）
-    for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
-        cv2.rectangle(img_rgb, (x0, y0), (x1, y1), colors[i % len(colors)], thickness=8)
+# サイズ取得
+tb_num = draw.textbbox((0, 0), num_txt, font=font_main)
+num_w = tb_num[2] - tb_num[0]
+num_h = tb_num[3] - tb_num[1]
 
-    # PILで半透明ラベル
-    base = Image.fromarray(img_rgb).convert("RGBA")
-    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
+tb_pct = draw.textbbox((0, 0), pct_txt, font=font_pct)
+pct_w = tb_pct[2] - tb_pct[0]
+pct_h = tb_pct[3] - tb_pct[1]
 
-    res_txts = []
+# 全体サイズ（横に並べる）
+total_w = num_w + pct_w
+total_h = max(num_h, pct_h)
 
-    # フォント固定（統一）
-    font_size = 72  # ←ここだけ調整（60〜80推奨）
-    font = _load_font(font_path, font_size)
+# 中央座標
+cx = (x0 + x1) // 2
+cy = (y0 + y1) // 2
 
-    # ラベル見た目
-    pad_x = int(font_size * 0.38)
-    pad_y = int(font_size * 0.20)
-    radius = int(font_size * 0.35)
-    bg_fill = (0, 0, 0, 130)
-    bg_outline = (255, 255, 255, 90)
+# 左上座標
+start_x = cx - total_w // 2
+start_y = cy - total_h // 2
 
-    for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
-        area_px = np.count_nonzero(m)
-        if area_px == 0:
-            continue
+# ピル背景（全体サイズ基準）
+pad_x = int(font_size * 0.38)
+pad_y = int(font_size * 0.20)
+radius = int(font_size * 0.35)
 
-        food_px = np.count_nonzero(cv2.bitwise_and(food_mask, m))
-        ratio = max(0.0, (area_px - food_px) / area_px * 100.0)
-        ratio_int = int(round(ratio))
-        txt = f"{ratio_int}%"
+bg = (
+    start_x - pad_x,
+    start_y - pad_y,
+    start_x + total_w + pad_x,
+    start_y + total_h + pad_y
+)
 
-        # 中央座標（枠のど真ん中）
-        cx = (x0 + x1) // 2
-        cy = (y0 + y1) // 2
+draw.rounded_rectangle(bg, radius=radius, fill=(0, 0, 0, 130))
+draw.rounded_rectangle(bg, radius=radius, outline=(255, 255, 255, 90), width=2)
 
-        # ✅ anchor="mm"でテキストbboxを中央基準で取得（ズレない）
-        try:
-            tb = draw.textbbox((cx, cy), txt, font=font, anchor="mm")
-        except TypeError:
-            # 古いPillow対策（anchorが無い場合）
-            tb0 = draw.textbbox((0, 0), txt, font=font)
-            w = tb0[2] - tb0[0]
-            h = tb0[3] - tb0[1]
-            tb = (cx - w // 2, cy - h // 2, cx + w // 2, cy + h // 2)
+# --- 描画 ---
+# 数字
+draw.text(
+    (start_x, start_y),
+    num_txt,
+    font=font_main,
+    fill=(255, 255, 255, 255)
+)
 
-        left, top, right, bottom = tb
+# %（少し下にズラすと自然）
+draw.text(
+    (start_x + num_w, start_y + int(num_h * 0.15)),
+    pct_txt,
+    font=font_pct,
+    fill=(255, 255, 255, 255)
+)
 
-        # 背景ピル
-        bg = (left - pad_x, top - pad_y, right + pad_x, bottom + pad_y)
-        draw.rounded_rectangle(bg, radius=radius, fill=bg_fill)
-        draw.rounded_rectangle(bg, radius=radius, outline=bg_outline, width=2)
 
-        # テキスト（strokeで縁取り：スタイリッシュ）
-        # ※ strokeはPillow対応版ならこれが一番綺麗
-        try:
-            draw.text(
-                (cx, cy),
-                txt,
-                font=font,
-                fill=(255, 255, 255, 255),
-                anchor="mm",
-                stroke_width=2,
-                stroke_fill=(0, 0, 0, 140),
-            )
-        except TypeError:
-            # stroke/anchor非対応の古い環境向けフォールバック
-            draw.text((cx, cy), txt, font=font, fill=(255, 255, 255, 255), anchor="mm")
-
-        res_txts.append((name, ratio))
-
-    out = Image.alpha_composite(base, overlay).convert("RGB")
-    return np.array(out), res_txts
 # =========================================================
 # 5) Streamlit UI
 # =========================================================
@@ -329,6 +304,7 @@ if uploads:
                 fname = df.iloc[idx]["ファイル名"]
                 st.subheader(f"🔍 解析結果: {fname}")
                 st.image(previews[fname], use_container_width=True)
+
 
 
 
