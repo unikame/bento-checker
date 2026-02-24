@@ -149,38 +149,31 @@ def build_compartments_fixed_4(
 # =========================================================
 
 def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: str):
-    """
-    - 枠線はOpenCVで描画
-    - 数字はPILで描画（スタイリッシュ：半透明ピル背景）
-    - フォントサイズは固定（統一）
-    """
-    # OpenCV(BGR) -> RGB
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-    # 枠線カラー（BGRじゃなくRGBで扱うので注意）
     colors = [
-        (0, 255, 0),     # 緑
-        (255, 255, 255), # 白
-        (255, 0, 0),     # 赤
-        (255, 255, 0),   # 黄
+        (0, 255, 0),
+        (255, 255, 255),
+        (255, 0, 0),
+        (255, 255, 0),
     ]
 
-    # 枠線（少し細く）
+    # 枠線
     for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
         cv2.rectangle(img_rgb, (x0, y0), (x1, y1), colors[i % len(colors)], thickness=8)
 
-    # PILで「半透明」を使うためRGBAへ
     pil_img = Image.fromarray(img_rgb).convert("RGBA")
     overlay = Image.new("RGBA", pil_img.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
     res_txts = []
 
-    # フォント固定（統一）
-    font_size = 72   # ←好みで 60〜80 推奨
+    # フォント固定
+    font_size = 72
     font = _load_font(font_path, font_size)
 
     for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
+
         area_px = np.count_nonzero(m)
         if area_px == 0:
             continue
@@ -190,39 +183,39 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         ratio_int = int(round(ratio))
         txt = f"{ratio_int}%"
 
-     # テキストbbox取得（オフセット込みで扱う）
-tb = draw.textbbox((0, 0), txt, font=font)
-# tb = (left, top, right, bottom)  ※ left/topがマイナスになることがある
-left, top, right, bottom = tb
-text_w = right - left
-text_h = bottom - top
+        # --- テキストbbox（ズレ補正込み） ---
+        tb = draw.textbbox((0, 0), txt, font=font)
+        left, top, right, bottom = tb
+        text_w = right - left
+        text_h = bottom - top
 
-# 中央座標
-cx = (x0 + x1) // 2
-cy = (y0 + y1) // 2
+        # 中央座標
+        cx = (x0 + x1) // 2
+        cy = (y0 + y1) // 2
 
-# 左上座標（bboxのオフセットを打ち消して中央合わせ）
-tx = cx - text_w // 2 - left
-ty = cy - text_h // 2 - top2
+        # 中央配置（ズレ補正）
+        tx = cx - text_w // 2 - left
+        ty = cy - text_h // 2 - top
 
-        # --- スタイリッシュなピル背景（半透明 + 角丸） ---
+        # 視覚補正（少し上に）
+        ty -= int(font_size * 0.05)
+
+        # --- ピル背景 ---
         pad_x = int(font_size * 0.35)
         pad_y = int(font_size * 0.18)
-        r = int(font_size * 0.35)  # 角丸半径
+        r = int(font_size * 0.35)
 
         bg_x0 = tx - pad_x
         bg_y0 = ty - pad_y
         bg_x1 = tx + text_w + pad_x
         bg_y1 = ty + text_h + pad_y
 
-        # 背景：黒の半透明
         draw.rounded_rectangle(
             (bg_x0, bg_y0, bg_x1, bg_y1),
             radius=r,
-            fill=(0, 0, 0, 140)  # ←透明度（0〜255）
+            fill=(0, 0, 0, 140)
         )
 
-        # 背景に薄い白枠（高級感）
         draw.rounded_rectangle(
             (bg_x0, bg_y0, bg_x1, bg_y1),
             radius=r,
@@ -230,7 +223,7 @@ ty = cy - text_h // 2 - top2
             width=2
         )
 
-        # テキスト（縁取りは弱めに）
+        # 縁取り（軽め）
         outline = 2
         for dx in range(-outline, outline + 1):
             for dy in range(-outline, outline + 1):
@@ -242,7 +235,6 @@ ty = cy - text_h // 2 - top2
 
         res_txts.append((name, ratio))
 
-    # overlayを合成してRGBへ戻す
     out = Image.alpha_composite(pil_img, overlay).convert("RGB")
     return np.array(out), res_txts
 
@@ -339,6 +331,7 @@ if uploads:
                 fname = df.iloc[idx]["ファイル名"]
                 st.subheader(f"🔍 解析結果: {fname}")
                 st.image(previews[fname], use_container_width=True)
+
 
 
 
