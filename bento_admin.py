@@ -12,15 +12,10 @@ from PIL import Image, ImageDraw, ImageFont
 # =========================================================
 
 def _find_font_path(preferred: str) -> str:
-    """
-    preferred が存在すればそれを使う。
-    無ければOS別によくあるフォント候補から見つける。
-    """
     candidates = []
     if preferred:
         candidates.append(preferred)
 
-    # Linux / Streamlit Cloud
     candidates += [
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJKjp-Regular.otf",
@@ -28,7 +23,6 @@ def _find_font_path(preferred: str) -> str:
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ]
 
-    # Windows
     candidates += [
         "C:/Windows/Fonts/meiryo.ttc",
         "C:/Windows/Fonts/meiryob.ttc",
@@ -48,10 +42,6 @@ def _find_font_path(preferred: str) -> str:
 
 
 def _load_font(font_path: str, font_size: int) -> ImageFont.FreeTypeFont:
-    """
-    TrueTypeが読めるならそれを使う。ダメならデフォルト。
-    ※ デフォルトフォントはサイズ変更が効きづらいので、font_path はなるべく通す
-    """
     if font_path:
         try:
             return ImageFont.truetype(font_path, font_size)
@@ -66,10 +56,6 @@ def _load_font(font_path: str, font_size: int) -> ImageFont.FreeTypeFont:
 def get_bento_mask_and_bbox(
     img_bgr: np.ndarray
 ) -> Tuple[Optional[np.ndarray], Optional[Tuple[int, int, int, int]]]:
-    """
-    容器（トレー）の最大輪郭を狙ってマスク化し、外接矩形(bbox)も返す
-    bbox = (x, y, w, h)
-    """
     H, W = img_bgr.shape[:2]
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (9, 9), 0)
@@ -85,7 +71,6 @@ def get_bento_mask_and_bbox(
     c = max(cnts, key=cv2.contourArea)
     area = cv2.contourArea(c)
 
-    # 小さすぎる輪郭しかない場合は失敗扱い
     if area < (H * W * 0.12):
         return None, None
 
@@ -94,26 +79,28 @@ def get_bento_mask_and_bbox(
     mask = np.zeros((H, W), dtype=np.uint8)
     cv2.drawContours(mask, [c], -1, 255, thickness=-1)
 
-    # 縁の誤検出を減らすため少し内側に
+    # 縁の誤検出を減らすため少し内側に（ここも効きます）
     mask = cv2.erode(mask, np.ones((7, 7), np.uint8), iterations=1)
 
     return mask, (x, y, w, h)
 
 # =========================================================
-# 2) 食材マスク
+# 2) 食材マスク（共通ベース）
+#    - おかず: 彩度Otsu
+#    - ご飯: 白抽出（ただし、ご飯は後で"専用補正"する）
 # =========================================================
 
-def get_food_mask(img_bgr: np.ndarray, bento_mask: np.ndarray, v_min: int, s_max: int) -> np.ndarray:
+def get_food_mask_base(img_bgr: np.ndarray, bento_mask: np.ndarray, v_min: int, s_max: int) -> np.ndarray:
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
 
     # 彩度で色物（おかず）を拾う
     s = hsv[:, :, 1]
     _, color_mask = cv2.threshold(s, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # 明度で白物（ご飯）を拾う（容器の白も拾いやすいので閾値で調整）
+    # 明度で白物（ご飯）を拾う
     rice_mask = cv2.inRange(hsv, (0, 0, v_min), (180, s_max, 255))
 
-    # 少し安定化（白ノイズの穴埋め＆平滑化）
+    # 少し安定化
     kernel = np.ones((5, 5), np.uint8)
     rice_mask = cv2.morphologyEx(rice_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     rice_mask = cv2.medianBlur(rice_mask, 5)
@@ -123,26 +110,59 @@ def get_food_mask(img_bgr: np.ndarray, bento_mask: np.ndarray, v_min: int, s_max
     return combined
 
 # =========================================================
-# 3) 4分割（この容器専用：固定テンプレ）
+# 2.5) ご飯エリア専用マスク（精度上げの本丸）
+#    - 米粒の隙間(赤い底)を空白として数えない方向へ
+#    - 強めの穴埋め + 少し膨張
 # =========================================================
 
-# rect = (name, left, top, right, bottom)  ※ 0-1比率
+def get_rice_mask_strong(
+    img_bgr: np.ndarray,
+    mask_roi: np.ndarray,
+    rice_v_min: int,
+    rice_s_max: int,
+    close_kernel: int,
+    close_iter: int,
+    dilate_iter: int,
+) -> np.ndarray:
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    rice = cv2.inRange(hsv, (0, 0, rice_v_min), (180, rice_s_max, 255))
+
+    k = max(3, int(close_kernel))
+    if k % 2 == 0:
+        k += 1
+
+    kernel = np.ones((k, k), np.uint8)
+
+    # 粒間の穴を埋める
+    rice = cv2.morphologyEx(rice, cv2.MORPH_CLOSE, kernel, iterations=max(1, int(close_iter)))
+
+    # ちょい平滑化
+    rice = cv2.medianBlur(rice, 5)
+
+    # 面としてつなげる（空白の盛りを抑える）
+    if dilate_iter > 0:
+        rice = cv2.dilate(rice, np.ones((3, 3), np.uint8), iterations=int(dilate_iter))
+
+    rice = cv2.bitwise_and(rice, rice, mask=mask_roi)
+    return rice
+
+# =========================================================
+# 3) 4分割（固定テンプレ）
+#    - margin_ratio を追加: 区画を内側に縮めて、仕切り/フチを計算対象から外す
+# =========================================================
+
 TEMPLATE_FIXED_4: List[Tuple[str, float, float, float, float]] = [
     ("左上", 0.04, 0.06, 0.34, 0.48),
     ("右上", 0.35, 0.06, 0.96, 0.48),
-    ("左下", 0.04, 0.52, 0.70, 0.95),
+    ("左下", 0.04, 0.52, 0.70, 0.95),  # ここがご飯枠想定
     ("右下", 0.72, 0.52, 0.96, 0.95),
 ]
-
 
 def build_compartments_fixed_4(
     bento_mask: np.ndarray,
     bbox: Tuple[int, int, int, int],
+    margin_ratio: float = 0.02,   # 追加: 区画を内側に縮める比率（2%推奨）
 ) -> List[Tuple[str, Tuple[int, int, int, int], np.ndarray]]:
-    """
-    固定テンプレ(比率) + bboxから、区画の矩形とマスクを作る
-    return: [(name, (x0,y0,x1,y1), mask), ...]
-    """
     x, y, w, h = bbox
 
     comps = []
@@ -152,41 +172,41 @@ def build_compartments_fixed_4(
         x1 = int(x + r * w)
         y1 = int(y + b * h)
 
-        m = np.zeros_like(bento_mask)
-        cv2.rectangle(m, (x0, y0), (x1, y1), 255, thickness=-1)
+        # 内側マージン（仕切り/フチを除外）
+        mx = int(w * margin_ratio)
+        my = int(h * margin_ratio)
+        x0m = x0 + mx
+        y0m = y0 + my
+        x1m = x1 - mx
+        y1m = y1 - my
 
-        # 容器外に出ないようクリップ
+        # 変な逆転防止
+        if x1m <= x0m + 5 or y1m <= y0m + 5:
+            x0m, y0m, x1m, y1m = x0, y0, x1, y1
+
+        m = np.zeros_like(bento_mask)
+        cv2.rectangle(m, (x0m, y0m), (x1m, y1m), 255, thickness=-1)
         m = cv2.bitwise_and(m, bento_mask)
 
-        comps.append((name, (x0, y0, x1, y1), m))
+        comps.append((name, (x0m, y0m, x1m, y1m), m))
 
     return comps
 
 # =========================================================
-# 4) 描画＆計算（スタイリッシュ版）
-#   - 白線なし
-#   - 角丸なし（四角）
-#   - 数字と%の上下ズレ解消
-#   - %だけ小さく
+# 4) 描画＆計算
+#    - comps で渡された各区画マスクに対して空白率を算出
 # =========================================================
 
 def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: str):
-    """
-    - 枠線: OpenCV
-    - ラベル: PIL (RGBA overlay)
-    - 背景: 四角、白線なし
-    - 文字: 数字と%を別フォントで中央揃え（mm） → ズレに強い
-    """
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
     colors = [
-        (0, 255, 0),      # 緑
-        (255, 255, 255),  # 白
-        (255, 0, 0),      # 赤
-        (255, 255, 0),    # 黄
+        (0, 255, 0),
+        (255, 255, 255),
+        (255, 0, 0),
+        (255, 255, 0),
     ]
 
-    # 枠線（太さ調整）
     for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
         cv2.rectangle(img_rgb, (x0, y0), (x1, y1), colors[i % len(colors)], thickness=8)
 
@@ -196,15 +216,11 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
 
     res_txts = []
 
-    # フォントサイズ固定（統一）
     font_size = 72
     font_main = _load_font(font_path, font_size)
-    font_pct = _load_font(font_path, int(font_size * 0.55))  # %だけ小さく
+    font_pct = _load_font(font_path, int(font_size * 0.55))
 
-    # ラベル背景（四角）
     bg_fill = (0, 0, 0, 130)
-
-    # 余白（上が詰まって見えるのでpad_yを厚めに）
     pad_x = int(font_size * 0.35)
     pad_y = int(font_size * 0.30)
 
@@ -220,7 +236,6 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         num_txt = str(ratio_int)
         pct_txt = "%"
 
-        # サイズ取得（bbox）
         tb_num = draw.textbbox((0, 0), num_txt, font=font_main)
         num_w = tb_num[2] - tb_num[0]
         num_h = tb_num[3] - tb_num[1]
@@ -232,36 +247,20 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         total_w = num_w + pct_w
         total_h = max(num_h, pct_h)
 
-        # 枠の中心
         cx = (x0 + x1) // 2
         cy = (y0 + y1) // 2
 
-        # 背景（四角）：全体を中央に配置
         label_x0 = cx - total_w // 2 - pad_x
         label_y0 = cy - total_h // 2 - pad_y
         label_x1 = cx + total_w // 2 + pad_x
         label_y1 = cy + total_h // 2 + pad_y
         draw.rectangle((label_x0, label_y0, label_x1, label_y1), fill=bg_fill)
 
-        # 文字は中央アンカーで配置（mm）
         num_cx = cx - total_w // 2 + num_w // 2
         pct_cx = cx - total_w // 2 + num_w + pct_w // 2
 
-        draw.text(
-            (num_cx, cy),
-            num_txt,
-            font=font_main,
-            fill=(255, 255, 255, 255),
-            anchor="mm",
-        )
-
-        draw.text(
-            (pct_cx, cy),
-            pct_txt,
-            font=font_pct,
-            fill=(255, 255, 255, 255),
-            anchor="mm",
-        )
+        draw.text((num_cx, cy), num_txt, font=font_main, fill=(255, 255, 255, 255), anchor="mm")
+        draw.text((pct_cx, cy), pct_txt, font=font_pct, fill=(255, 255, 255, 255), anchor="mm")
 
         res_txts.append((name, ratio))
 
@@ -274,16 +273,28 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
 
 st.set_page_config(page_title="スカスカ弁当 判定管理", layout="wide")
 st.markdown("<h1 style='margin:0;'>スカスカ弁当 判定管理</h1>", unsafe_allow_html=True)
-st.caption("※この版は「赤い4分割容器」専用です（テンプレ固定）")
+st.caption("※この版は「赤い4分割容器」専用です（テンプレ固定 + ご飯エリア強化 + 仕切り除外）")
 
 with st.sidebar:
     st.header("⚙️ 判定調整")
     ok_limit = st.slider("OK上限（全体）(%)", 0, 50, 20)
 
     st.divider()
-    st.write("▼ 認識が悪い場合のみ調整")
-    v_min = st.slider("ご飯の白さ (明度)", 0, 255, 170)
-    s_max = st.slider("彩度上限", 0, 255, 70)
+    st.write("▼ 共通マスク（おかず + 白物）")
+    v_min = st.slider("白っぽい判定 (明度) v_min", 0, 255, 170)
+    s_max = st.slider("白っぽい判定 (彩度) s_max", 0, 255, 70)
+
+    st.divider()
+    st.write("▼ 仕切り/フチ除外（超効きます）")
+    margin_ratio = st.slider("区画の内側マージン比率", 0.0, 0.06, 0.02, 0.005)
+
+    st.divider()
+    st.write("▼ ご飯エリア専用（精度の本丸）")
+    rice_v_min = st.slider("ご飯 v_min（少し下げると抜けが減る）", 0, 255, 160)
+    rice_s_max = st.slider("ご飯 s_max（高いほど白を拾いやすい）", 0, 255, 90)
+    close_kernel = st.slider("ご飯 穴埋めカーネル（大きいほど粒間を埋める）", 3, 21, 13, 2)
+    close_iter = st.slider("ご飯 穴埋め回数", 1, 6, 3)
+    dilate_iter = st.slider("ご飯 つなぎ膨張（少しでOK）", 0, 4, 1)
 
     st.divider()
     st.write("▼ 表示フォント（PIL描画）")
@@ -304,6 +315,9 @@ uploads = st.file_uploader(
     accept_multiple_files=True
 )
 
+# 左下を「ご飯枠」とみなす（テンプレ固定のため、ここを変えれば別枠にも対応可）
+RICE_COMP_NAME = "左下"
+
 if uploads:
     results = []
     previews = {}
@@ -320,18 +334,47 @@ if uploads:
                 st.warning(f"容器検出に失敗: {up.name}")
                 continue
 
-            f_mask = get_food_mask(img, b_mask, v_min, s_max)
+            # 区画生成（仕切り/フチ除外）
+            comps = build_compartments_fixed_4(b_mask, bbox, margin_ratio=margin_ratio)
 
-            # 4分割固定テンプレで区画生成
-            comps = build_compartments_fixed_4(b_mask, bbox)
+            # まず共通ベース
+            food_mask = get_food_mask_base(img, b_mask, v_min, s_max)
 
-            # 描画
-            render, area_details = draw_results(img, comps, f_mask, font_path)
+            # ご飯枠だけ強化マスクに差し替え（food_mask を上書き合成）
+            rice_comp = None
+            for (nm, rect, m) in comps:
+                if nm == RICE_COMP_NAME:
+                    rice_comp = (nm, rect, m)
+                    break
 
-            # 全体空白率
-            total_ratio = (np.count_nonzero(b_mask) - np.count_nonzero(f_mask)) / max(1, np.count_nonzero(b_mask)) * 100.0
+            if rice_comp is not None:
+                _, _, rice_m = rice_comp
+                rice_strong = get_rice_mask_strong(
+                    img_bgr=img,
+                    mask_roi=rice_m,
+                    rice_v_min=rice_v_min,
+                    rice_s_max=rice_s_max,
+                    close_kernel=close_kernel,
+                    close_iter=close_iter,
+                    dilate_iter=dilate_iter,
+                )
 
-            # エリア別表示（固定順）
+                # rice枠の部分は "強化ご飯マスク" を優先
+                food_mask = food_mask.copy()
+                food_mask = cv2.bitwise_or(food_mask, rice_strong)
+
+            # 描画（区画ごとの%は food_mask を使って算出）
+            render, area_details = draw_results(img, comps, food_mask, font_path)
+
+            # 全体空白率（※ b_mask ではなく、区画マスク合計で出すと仕切り除外が一貫する）
+            comp_union = np.zeros_like(b_mask)
+            for _, _, m in comps:
+                comp_union = cv2.bitwise_or(comp_union, m)
+
+            total_area = np.count_nonzero(comp_union)
+            total_food = np.count_nonzero(cv2.bitwise_and(food_mask, comp_union))
+            total_ratio = (total_area - total_food) / max(1, total_area) * 100.0
+
             area_str = ", ".join([f"{name}:{int(round(r))}%" for name, r in area_details])
 
             results.append({
