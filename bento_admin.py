@@ -149,23 +149,36 @@ def build_compartments_fixed_4(
 # =========================================================
 
 def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: str):
+    """
+    - 枠線はOpenCVで描画
+    - 数字はPILで描画（スタイリッシュ：半透明ピル背景）
+    - フォントサイズは固定（統一）
+    """
+    # OpenCV(BGR) -> RGB
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-    res_txts = []
 
+    # 枠線カラー（BGRじゃなくRGBで扱うので注意）
     colors = [
-        (0, 255, 0),
-        (255, 255, 255),
-        (255, 0, 0),
-        (255, 255, 0),
+        (0, 255, 0),     # 緑
+        (255, 255, 255), # 白
+        (255, 0, 0),     # 赤
+        (255, 255, 0),   # 黄
     ]
 
-    # 枠線
+    # 枠線（少し細く）
     for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
-        cv2.rectangle(img_rgb, (x0, y0), (x1, y1), colors[i % len(colors)], thickness=10)
+        cv2.rectangle(img_rgb, (x0, y0), (x1, y1), colors[i % len(colors)], thickness=8)
 
-    # テキスト（PIL）
-    pil_img = Image.fromarray(img_rgb)
-    draw = ImageDraw.Draw(pil_img)
+    # PILで「半透明」を使うためRGBAへ
+    pil_img = Image.fromarray(img_rgb).convert("RGBA")
+    overlay = Image.new("RGBA", pil_img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    res_txts = []
+
+    # フォント固定（統一）
+    font_size = 72   # ←好みで 60〜80 推奨
+    font = _load_font(font_path, font_size)
 
     for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
         area_px = np.count_nonzero(m)
@@ -177,16 +190,7 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         ratio_int = int(round(ratio))
         txt = f"{ratio_int}%"
 
-        # フォントサイズ（もっと大きく）
-        box_size = min(max(1, x1 - x0), max(1, y1 - y0))
-        font_size = int(box_size * 0.55)          # ← 0.36 → 0.55 に増量
-        font_size = max(36, min(font_size, 220))  # 最小値も上げる
-
-        font = _load_font(font_path, font_size)
-
-        font_size = 80
-        font = _load_font(font_path, font_size)
-
+        # テキストサイズ
         try:
             tb = draw.textbbox((0, 0), txt, font=font)
             text_w = tb[2] - tb[0]
@@ -194,22 +198,54 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         except Exception:
             text_w, text_h = draw.textsize(txt, font=font)
 
+        # 中央座標
         cx = (x0 + x1) // 2
         cy = (y0 + y1) // 2
+
+        # 文字の左上
         tx = cx - text_w // 2
         ty = cy - text_h // 2
 
-        outline = max(4, int(font_size * 0.10))
+        # --- スタイリッシュなピル背景（半透明 + 角丸） ---
+        pad_x = int(font_size * 0.35)
+        pad_y = int(font_size * 0.18)
+        r = int(font_size * 0.35)  # 角丸半径
+
+        bg_x0 = tx - pad_x
+        bg_y0 = ty - pad_y
+        bg_x1 = tx + text_w + pad_x
+        bg_y1 = ty + text_h + pad_y
+
+        # 背景：黒の半透明
+        draw.rounded_rectangle(
+            (bg_x0, bg_y0, bg_x1, bg_y1),
+            radius=r,
+            fill=(0, 0, 0, 140)  # ←透明度（0〜255）
+        )
+
+        # 背景に薄い白枠（高級感）
+        draw.rounded_rectangle(
+            (bg_x0, bg_y0, bg_x1, bg_y1),
+            radius=r,
+            outline=(255, 255, 255, 120),
+            width=2
+        )
+
+        # テキスト（縁取りは弱めに）
+        outline = 2
         for dx in range(-outline, outline + 1):
             for dy in range(-outline, outline + 1):
                 if dx == 0 and dy == 0:
                     continue
-                draw.text((tx + dx, ty + dy), txt, font=font, fill=(0, 0, 0))
+                draw.text((tx + dx, ty + dy), txt, font=font, fill=(0, 0, 0, 160))
 
-        draw.text((tx, ty), txt, font=font, fill=(255, 255, 255))
+        draw.text((tx, ty), txt, font=font, fill=(255, 255, 255, 255))
+
         res_txts.append((name, ratio))
 
-    return np.array(pil_img), res_txts
+    # overlayを合成してRGBへ戻す
+    out = Image.alpha_composite(pil_img, overlay).convert("RGB")
+    return np.array(out), res_txts
 
 # =========================================================
 # 5) Streamlit UI
@@ -304,4 +340,5 @@ if uploads:
                 fname = df.iloc[idx]["ファイル名"]
                 st.subheader(f"🔍 解析結果: {fname}")
                 st.image(previews[fname], use_container_width=True)
+
 
