@@ -108,7 +108,7 @@ def build_compartments_fixed_4(
     return comps
 
 # =========================================================
-# 4) 描画＆計算（③ draw_resultsを書き換え：PILでフォント描画）
+# 4) 描画＆計算（PILでフォント描画：文字サイズ大きめ）
 # =========================================================
 
 def _load_font(font_path: str, font_size: int) -> ImageFont.FreeTypeFont:
@@ -124,6 +124,7 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
     """
     - 枠線はOpenCVで描画
     - 数字はPILで描画（好きなフォントに変更可能）
+    - フォントサイズは枠サイズに応じて自動（やや大きめ）
     """
     # OpenCV→RGB
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
@@ -156,19 +157,15 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         ratio_int = int(round(ratio))
         txt = f"{ratio_int}%"
 
-# --- フォントサイズ自動調整（枠サイズ基準） ---
-box_w = max(1, x1 - x0)
-box_h = max(1, y1 - y0)
-box_size = min(box_w, box_h)
+        # --- フォントサイズ自動調整（枠サイズ基準） ---
+        box_w = max(1, x1 - x0)
+        box_h = max(1, y1 - y0)
+        box_size = min(box_w, box_h)
 
-# 変更前: font_size = int(box_size * 0.25)
-# ✅ 変更後: 0.36くらいが見栄え良い
-font_size = int(box_size * 0.36)
-font_size = max(26, min(font_size, 180))  # 最小/最大も少し引き上げ
-font = _load_font(font_path, font_size)
-
-# 縁取り（太さも少し強く）
-outline = max(3, int(font_size * 0.10))
+        # ✅ 文字を大きくする設定（0.36推奨）
+        font_size = int(box_size * 0.36)
+        font_size = max(26, min(font_size, 180))
+        font = _load_font(font_path, font_size)
 
         # テキストサイズ取得（Pillowの新旧に対応）
         try:
@@ -184,8 +181,8 @@ outline = max(3, int(font_size * 0.10))
         tx = cx - text_w // 2
         ty = cy - text_h // 2
 
-        # 縁取り（太さはフォントサイズに連動）
-        outline = max(2, int(font_size * 0.08))
+        # ✅ 縁取り（太さも少し強く）
+        outline = max(3, int(font_size * 0.10))
         for dx in range(-outline, outline + 1):
             for dy in range(-outline, outline + 1):
                 if dx == 0 and dy == 0:
@@ -294,4 +291,3 @@ if uploads:
                 fname = df.iloc[idx]["ファイル名"]
                 st.subheader(f"🔍 解析結果: {fname}")
                 st.image(previews[fname], use_container_width=True)
-
