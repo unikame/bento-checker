@@ -184,6 +184,9 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
 
         font = _load_font(font_path, font_size)
 
+        font_size = 80
+        font = _load_font(font_path, font_size)
+
         try:
             tb = draw.textbbox((0, 0), txt, font=font)
             text_w = tb[2] - tb[0]
@@ -301,3 +304,4 @@ if uploads:
                 fname = df.iloc[idx]["ファイル名"]
                 st.subheader(f"🔍 解析結果: {fname}")
                 st.image(previews[fname], use_container_width=True)
+
