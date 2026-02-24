@@ -149,7 +149,13 @@ def build_compartments_fixed_4(
 # =========================================================
 
 def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: str):
-
+    """
+    要望反映版：
+    - ラベルは四角（角丸なし）
+    - ラベルの白枠なし
+    - 数字と%のズレを解消（同一ベースラインで描画）
+    - フォントサイズ固定で統一
+    """
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
     colors = [
@@ -169,12 +175,19 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
 
     res_txts = []
 
+    # フォント固定
     font_size = 72
     font_main = _load_font(font_path, font_size)
-    font_pct = _load_font(font_path, int(font_size * 0.6))
+    font_pct = _load_font(font_path, int(font_size * 0.55))  # %を小さめに
+
+    # ラベル背景（四角）
+    bg_fill = (0, 0, 0, 130)
+
+    # 余白
+    pad_x = int(font_size * 0.35)
+    pad_y = int(font_size * 0.18)
 
     for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
-
         area_px = np.count_nonzero(m)
         if area_px == 0:
             continue
@@ -183,11 +196,10 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         ratio = max(0.0, (area_px - food_px) / area_px * 100.0)
         ratio_int = int(round(ratio))
 
-        # --- テキスト分離 ---
         num_txt = str(ratio_int)
         pct_txt = "%"
 
-        # サイズ取得
+        # --- サイズ取得（bbox） ---
         tb_num = draw.textbbox((0, 0), num_txt, font=font_main)
         num_w = tb_num[2] - tb_num[0]
         num_h = tb_num[3] - tb_num[1]
@@ -199,41 +211,41 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         total_w = num_w + pct_w
         total_h = max(num_h, pct_h)
 
+        # 枠の中心
         cx = (x0 + x1) // 2
         cy = (y0 + y1) // 2
 
-        start_x = cx - total_w // 2
-        start_y = cy - total_h // 2
+        # ラベル左上（ラベル全体を中央に）
+        label_x0 = cx - total_w // 2 - pad_x
+        label_y0 = cy - total_h // 2 - pad_y
+        label_x1 = cx + total_w // 2 + pad_x
+        label_y1 = cy + total_h // 2 + pad_y
 
-        # 背景
-        pad_x = int(font_size * 0.38)
-        pad_y = int(font_size * 0.20)
-        radius = int(font_size * 0.35)
+        # 背景（四角）
+        draw.rectangle((label_x0, label_y0, label_x1, label_y1), fill=bg_fill)
 
-        bg = (
-            start_x - pad_x,
-            start_y - pad_y,
-            start_x + total_w + pad_x,
-            start_y + total_h + pad_y
-        )
-
-        draw.rounded_rectangle(bg, radius=radius, fill=(0, 0, 0, 130))
-        draw.rounded_rectangle(bg, radius=radius, outline=(255, 255, 255, 90), width=2)
+        # --- テキスト描画（同一ベースラインでズレ解消） ---
+        # 文字領域の左上
+        text_x = cx - total_w // 2
+        # baseline を「中央ライン」に合わせる（上下ズレを吸収）
+        baseline_y = cy + int(total_h * 0.30)
 
         # 数字
         draw.text(
-            (start_x, start_y),
+            (text_x, baseline_y),
             num_txt,
             font=font_main,
-            fill=(255, 255, 255, 255)
+            fill=(255, 255, 255, 255),
+            anchor="ls"  # left + baseline
         )
 
         # %
         draw.text(
-            (start_x + num_w, start_y + int(num_h * 0.15)),
+            (text_x + num_w, baseline_y),
             pct_txt,
             font=font_pct,
-            fill=(255, 255, 255, 255)
+            fill=(255, 255, 255, 255),
+            anchor="ls"  # left + baseline（同一baselineで揃える）
         )
 
         res_txts.append((name, ratio))
@@ -334,6 +346,7 @@ if uploads:
                 fname = df.iloc[idx]["ファイル名"]
                 st.subheader(f"🔍 解析結果: {fname}")
                 st.image(previews[fname], use_container_width=True)
+
 
 
 
