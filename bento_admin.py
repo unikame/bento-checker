@@ -1,21 +1,71 @@
+import os
 import cv2
 import numpy as np
 import pandas as pd
 import streamlit as st
-from typing import Optional, Tuple, List, Dict
-
-# ② import追加（フォント変更はPILで描画）
+from typing import Optional, Tuple, List
 from PIL import Image, ImageDraw, ImageFont
+
+# =========================================================
+# フォント探索（ここが今回の肝）
+# =========================================================
+
+def _find_font_path(preferred: str) -> str:
+    """
+    preferred が存在すればそれを使う。
+    無ければOS別によくあるフォント候補から見つける。
+    それも無ければ空文字を返す（→ load_default に落ちる）。
+    """
+    candidates = []
+
+    if preferred:
+        candidates.append(preferred)
+
+    # Linux/Streamlit Cloudでありがち
+    candidates += [
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+
+    # Windowsでありがち
+    candidates += [
+        "C:/Windows/Fonts/meiryo.ttc",
+        "C:/Windows/Fonts/meiryob.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+        "C:/Windows/Fonts/yu Gothic.ttf",
+        "C:/Windows/Fonts/YuGothB.ttc",
+        "C:/Windows/Fonts/arial.ttf",
+    ]
+
+    for p in candidates:
+        try:
+            if p and os.path.exists(p):
+                return p
+        except Exception:
+            pass
+
+    return ""
+
+
+def _load_font(font_path: str, font_size: int) -> ImageFont.FreeTypeFont:
+    """
+    TrueTypeが読めるなら必ずそれを使う。
+    読めない場合のみ default フォントにフォールバック。
+    """
+    if font_path:
+        try:
+            return ImageFont.truetype(font_path, font_size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
 
 # =========================================================
 # 1) 容器検出（マスク + 外接矩形）
 # =========================================================
 
 def get_bento_mask_and_bbox(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[Tuple[int, int, int, int]]]:
-    """
-    容器（トレー）の最大輪郭を狙ってマスク化し、外接矩形(bbox)も返す
-    bbox = (x, y, w, h)
-    """
     H, W = img_bgr.shape[:2]
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (9, 9), 0)
@@ -31,7 +81,6 @@ def get_bento_mask_and_bbox(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarray], 
     c = max(cnts, key=cv2.contourArea)
     area = cv2.contourArea(c)
 
-    # 小さすぎる輪郭しかない場合は失敗扱い
     if area < (H * W * 0.12):
         return None, None
 
@@ -39,8 +88,6 @@ def get_bento_mask_and_bbox(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarray], 
 
     mask = np.zeros((H, W), dtype=np.uint8)
     cv2.drawContours(mask, [c], -1, 255, thickness=-1)
-
-    # 縁の誤検出を減らすため少し内側に
     mask = cv2.erode(mask, np.ones((7, 7), np.uint8), iterations=1)
 
     return mask, (x, y, w, h)
@@ -52,14 +99,11 @@ def get_bento_mask_and_bbox(img_bgr: np.ndarray) -> Tuple[Optional[np.ndarray], 
 def get_food_mask(img_bgr: np.ndarray, bento_mask: np.ndarray, v_min: int, s_max: int) -> np.ndarray:
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
 
-    # 彩度で色物（おかず）を拾う
     s = hsv[:, :, 1]
     _, color_mask = cv2.threshold(s, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # 明度で白物（ご飯）を拾う（容器の白も拾いやすいので閾値で調整）
     rice_mask = cv2.inRange(hsv, (0, 0, v_min), (180, s_max, 255))
 
-    # 少し安定化（白ノイズの穴埋め＆平滑化）
     kernel = np.ones((5, 5), np.uint8)
     rice_mask = cv2.morphologyEx(rice_mask, cv2.MORPH_CLOSE, kernel, iterations=2)
     rice_mask = cv2.medianBlur(rice_mask, 5)
@@ -69,10 +113,9 @@ def get_food_mask(img_bgr: np.ndarray, bento_mask: np.ndarray, v_min: int, s_max
     return combined
 
 # =========================================================
-# 3) 4分割（この容器専用：固定テンプレ）
+# 3) 4分割（固定テンプレ）
 # =========================================================
 
-# rect = (name, left, top, right, bottom)  ※ 0-1比率
 TEMPLATE_FIXED_4: List[Tuple[str, float, float, float, float]] = [
     ("左上", 0.04, 0.06, 0.34, 0.48),
     ("右上", 0.35, 0.06, 0.96, 0.48),
@@ -84,13 +127,9 @@ def build_compartments_fixed_4(
     bento_mask: np.ndarray,
     bbox: Tuple[int, int, int, int],
 ) -> List[Tuple[str, Tuple[int, int, int, int], np.ndarray]]:
-    """
-    固定テンプレ(比率) + bboxから、区画の矩形とマスクを作る
-    return: [(name, (x0,y0,x1,y1), mask), ...]
-    """
     x, y, w, h = bbox
-
     comps = []
+
     for name, l, t, r, b in TEMPLATE_FIXED_4:
         x0 = int(x + l * w)
         y0 = int(y + t * h)
@@ -99,8 +138,6 @@ def build_compartments_fixed_4(
 
         m = np.zeros_like(bento_mask)
         cv2.rectangle(m, (x0, y0), (x1, y1), 255, thickness=-1)
-
-        # 容器外に出ないようクリップ
         m = cv2.bitwise_and(m, bento_mask)
 
         comps.append((name, (x0, y0, x1, y1), m))
@@ -108,42 +145,25 @@ def build_compartments_fixed_4(
     return comps
 
 # =========================================================
-# 4) 描画＆計算（PILでフォント描画：文字サイズ大きめ）
+# 4) 描画＆計算（PILでフォント描画）
 # =========================================================
 
-def _load_font(font_path: str, font_size: int) -> ImageFont.FreeTypeFont:
-    """
-    フォントロード（失敗時はデフォルトフォントにフォールバック）
-    """
-    try:
-        return ImageFont.truetype(font_path, font_size)
-    except Exception:
-        return ImageFont.load_default()
-
 def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: str):
-    """
-    - 枠線はOpenCVで描画
-    - 数字はPILで描画（好きなフォントに変更可能）
-    - フォントサイズは枠サイズに応じて自動（やや大きめ）
-    """
-    # OpenCV→RGB
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-
     res_txts = []
 
     colors = [
-        (0, 255, 0),     # 緑
-        (255, 255, 255), # 白
-        (255, 0, 0),     # 赤
-        (255, 255, 0),   # 黄
+        (0, 255, 0),
+        (255, 255, 255),
+        (255, 0, 0),
+        (255, 255, 0),
     ]
 
-    # まず枠線はOpenCVで描く（img_rgbに描画）
+    # 枠線
     for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
-        color = colors[i % len(colors)]
-        cv2.rectangle(img_rgb, (x0, y0), (x1, y1), color, thickness=10)
+        cv2.rectangle(img_rgb, (x0, y0), (x1, y1), colors[i % len(colors)], thickness=10)
 
-    # PILに変換してテキスト描画
+    # テキスト（PIL）
     pil_img = Image.fromarray(img_rgb)
     draw = ImageDraw.Draw(pil_img)
 
@@ -157,17 +177,13 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         ratio_int = int(round(ratio))
         txt = f"{ratio_int}%"
 
-        # --- フォントサイズ自動調整（枠サイズ基準） ---
-        box_w = max(1, x1 - x0)
-        box_h = max(1, y1 - y0)
-        box_size = min(box_w, box_h)
+        # フォントサイズ（もっと大きく）
+        box_size = min(max(1, x1 - x0), max(1, y1 - y0))
+        font_size = int(box_size * 0.55)          # ← 0.36 → 0.55 に増量
+        font_size = max(36, min(font_size, 220))  # 最小値も上げる
 
-        # ✅ 文字を大きくする設定（0.36推奨）
-        font_size = int(box_size * 0.36)
-        font_size = max(26, min(font_size, 180))
         font = _load_font(font_path, font_size)
 
-        # テキストサイズ取得（Pillowの新旧に対応）
         try:
             tb = draw.textbbox((0, 0), txt, font=font)
             text_w = tb[2] - tb[0]
@@ -175,27 +191,22 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         except Exception:
             text_w, text_h = draw.textsize(txt, font=font)
 
-        # 中央配置
         cx = (x0 + x1) // 2
         cy = (y0 + y1) // 2
         tx = cx - text_w // 2
         ty = cy - text_h // 2
 
-        # ✅ 縁取り（太さも少し強く）
-        outline = max(3, int(font_size * 0.10))
+        outline = max(4, int(font_size * 0.10))
         for dx in range(-outline, outline + 1):
             for dy in range(-outline, outline + 1):
                 if dx == 0 and dy == 0:
                     continue
                 draw.text((tx + dx, ty + dy), txt, font=font, fill=(0, 0, 0))
 
-        # 本体（白）
         draw.text((tx, ty), txt, font=font, fill=(255, 255, 255))
-
         res_txts.append((name, ratio))
 
-    output = np.array(pil_img)  # PIL→numpy(RGB)
-    return output, res_txts
+    return np.array(pil_img), res_txts
 
 # =========================================================
 # 5) Streamlit UI
@@ -217,10 +228,15 @@ with st.sidebar:
     st.divider()
     st.write("▼ 表示フォント（PIL描画）")
 
-    # Streamlit Cloud/Linux想定: Noto Sans CJK が入っていることが多い
-    # Windowsローカルなら "C:/Windows/Fonts/meiryo.ttc" などに変更してください
     default_font_path = "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"
-    font_path = st.text_input("フォントファイルパス", value=default_font_path)
+    user_font_path = st.text_input("フォントファイルパス", value=default_font_path)
+    font_path = _find_font_path(user_font_path)
+
+    if font_path:
+        st.success(f"使用フォント: {font_path}")
+    else:
+        st.warning("TrueTypeフォントが見つかりません。文字が小さく見える可能性があります。")
+
     st.caption("例) Windows: C:/Windows/Fonts/meiryo.ttc")
 
 uploads = st.file_uploader(
@@ -246,17 +262,11 @@ if uploads:
                 continue
 
             f_mask = get_food_mask(img, b_mask, v_min, s_max)
-
-            # ★ 4分割固定テンプレで区画生成
             comps = build_compartments_fixed_4(b_mask, bbox)
 
-            # ★ draw_results（PILでフォント描画）
             render, area_details = draw_results(img, comps, f_mask, font_path)
 
-            # 全体空白率
             total_ratio = (np.count_nonzero(b_mask) - np.count_nonzero(f_mask)) / max(1, np.count_nonzero(b_mask)) * 100.0
-
-            # エリア別表示（固定順）
             area_str = ", ".join([f"{name}:{int(round(r))}%" for name, r in area_details])
 
             results.append({
