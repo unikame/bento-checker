@@ -164,8 +164,8 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray):
 # 5) Streamlit UI
 # =========================================================
 
-st.set_page_config(page_title="スカスカ弁当 判定管理（4分割固定）", layout="wide")
-st.markdown("<h1 style='margin:0;'>スカスカ弁当 判定管理（4分割固定）</h1>", unsafe_allow_html=True)
+st.set_page_config(page_title="スカスカ弁当 判定管理", layout="wide")
+st.markdown("<h1 style='margin:0;'>スカスカ弁当 判定管理</h1>", unsafe_allow_html=True)
 st.caption("※この版は「赤い4分割容器」専用です（テンプレ固定）")
 
 with st.sidebar:
@@ -244,3 +244,4 @@ if uploads:
                 fname = df.iloc[idx]["ファイル名"]
                 st.subheader(f"🔍 解析結果: {fname}")
                 st.image(previews[fname], use_container_width=True)
+
