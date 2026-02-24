@@ -149,6 +149,11 @@ def build_compartments_fixed_4(
 # =========================================================
 
 def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: str):
+    """
+    - 枠線: OpenCV
+    - ラベル: PIL（anchor='mm'で確実に中央揃え）
+    - フォントサイズは固定で統一
+    """
     img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
     colors = [
@@ -158,22 +163,29 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         (255, 255, 0),
     ]
 
-    # 枠線
+    # 枠線（少し細め）
     for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
         cv2.rectangle(img_rgb, (x0, y0), (x1, y1), colors[i % len(colors)], thickness=8)
 
-    pil_img = Image.fromarray(img_rgb).convert("RGBA")
-    overlay = Image.new("RGBA", pil_img.size, (0, 0, 0, 0))
+    # PILで半透明ラベル
+    base = Image.fromarray(img_rgb).convert("RGBA")
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
     res_txts = []
 
-    # フォント固定
-    font_size = 72
+    # フォント固定（統一）
+    font_size = 72  # ←ここだけ調整（60〜80推奨）
     font = _load_font(font_path, font_size)
 
-    for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
+    # ラベル見た目
+    pad_x = int(font_size * 0.38)
+    pad_y = int(font_size * 0.20)
+    radius = int(font_size * 0.35)
+    bg_fill = (0, 0, 0, 130)
+    bg_outline = (255, 255, 255, 90)
 
+    for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
         area_px = np.count_nonzero(m)
         if area_px == 0:
             continue
@@ -183,61 +195,47 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: s
         ratio_int = int(round(ratio))
         txt = f"{ratio_int}%"
 
-        # --- テキストbbox（ズレ補正込み） ---
-        tb = draw.textbbox((0, 0), txt, font=font)
-        left, top, right, bottom = tb
-        text_w = right - left
-        text_h = bottom - top
-
-        # 中央座標
+        # 中央座標（枠のど真ん中）
         cx = (x0 + x1) // 2
         cy = (y0 + y1) // 2
 
-        # 中央配置（ズレ補正）
-        tx = cx - text_w // 2 - left
-        ty = cy - text_h // 2 - top
+        # ✅ anchor="mm"でテキストbboxを中央基準で取得（ズレない）
+        try:
+            tb = draw.textbbox((cx, cy), txt, font=font, anchor="mm")
+        except TypeError:
+            # 古いPillow対策（anchorが無い場合）
+            tb0 = draw.textbbox((0, 0), txt, font=font)
+            w = tb0[2] - tb0[0]
+            h = tb0[3] - tb0[1]
+            tb = (cx - w // 2, cy - h // 2, cx + w // 2, cy + h // 2)
 
-        # 視覚補正（少し上に）
-        ty -= int(font_size * 0.05)
+        left, top, right, bottom = tb
 
-        # --- ピル背景 ---
-        pad_x = int(font_size * 0.35)
-        pad_y = int(font_size * 0.18)
-        r = int(font_size * 0.35)
+        # 背景ピル
+        bg = (left - pad_x, top - pad_y, right + pad_x, bottom + pad_y)
+        draw.rounded_rectangle(bg, radius=radius, fill=bg_fill)
+        draw.rounded_rectangle(bg, radius=radius, outline=bg_outline, width=2)
 
-        bg_x0 = tx - pad_x
-        bg_y0 = ty - pad_y
-        bg_x1 = tx + text_w + pad_x
-        bg_y1 = ty + text_h + pad_y
-
-        draw.rounded_rectangle(
-            (bg_x0, bg_y0, bg_x1, bg_y1),
-            radius=r,
-            fill=(0, 0, 0, 140)
-        )
-
-        draw.rounded_rectangle(
-            (bg_x0, bg_y0, bg_x1, bg_y1),
-            radius=r,
-            outline=(255, 255, 255, 120),
-            width=2
-        )
-
-        # 縁取り（軽め）
-        outline = 2
-        for dx in range(-outline, outline + 1):
-            for dy in range(-outline, outline + 1):
-                if dx == 0 and dy == 0:
-                    continue
-                draw.text((tx + dx, ty + dy), txt, font=font, fill=(0, 0, 0, 160))
-
-        draw.text((tx, ty), txt, font=font, fill=(255, 255, 255, 255))
+        # テキスト（strokeで縁取り：スタイリッシュ）
+        # ※ strokeはPillow対応版ならこれが一番綺麗
+        try:
+            draw.text(
+                (cx, cy),
+                txt,
+                font=font,
+                fill=(255, 255, 255, 255),
+                anchor="mm",
+                stroke_width=2,
+                stroke_fill=(0, 0, 0, 140),
+            )
+        except TypeError:
+            # stroke/anchor非対応の古い環境向けフォールバック
+            draw.text((cx, cy), txt, font=font, fill=(255, 255, 255, 255), anchor="mm")
 
         res_txts.append((name, ratio))
 
-    out = Image.alpha_composite(pil_img, overlay).convert("RGB")
+    out = Image.alpha_composite(base, overlay).convert("RGB")
     return np.array(out), res_txts
-
 # =========================================================
 # 5) Streamlit UI
 # =========================================================
@@ -331,6 +329,7 @@ if uploads:
                 fname = df.iloc[idx]["ファイル名"]
                 st.subheader(f"🔍 解析結果: {fname}")
                 st.image(previews[fname], use_container_width=True)
+
 
 
 
