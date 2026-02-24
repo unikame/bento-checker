@@ -4,6 +4,9 @@ import pandas as pd
 import streamlit as st
 from typing import Optional, Tuple, List, Dict
 
+# ② import追加（フォント変更はPILで描画）
+from PIL import Image, ImageDraw, ImageFont
+
 # =========================================================
 # 1) 容器検出（マスク + 外接矩形）
 # =========================================================
@@ -105,11 +108,26 @@ def build_compartments_fixed_4(
     return comps
 
 # =========================================================
-# 4) 描画＆計算（文字サイズ自動調整）
+# 4) 描画＆計算（③ draw_resultsを書き換え：PILでフォント描画）
 # =========================================================
 
-def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray):
-    output = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+def _load_font(font_path: str, font_size: int) -> ImageFont.FreeTypeFont:
+    """
+    フォントロード（失敗時はデフォルトフォントにフォールバック）
+    """
+    try:
+        return ImageFont.truetype(font_path, font_size)
+    except Exception:
+        return ImageFont.load_default()
+
+def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray, font_path: str):
+    """
+    - 枠線はOpenCVで描画
+    - 数字はPILで描画（好きなフォントに変更可能）
+    """
+    # OpenCV→RGB
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+
     res_txts = []
 
     colors = [
@@ -119,6 +137,15 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray):
         (255, 255, 0),   # 黄
     ]
 
+    # まず枠線はOpenCVで描く（img_rgbに描画）
+    for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
+        color = colors[i % len(colors)]
+        cv2.rectangle(img_rgb, (x0, y0), (x1, y1), color, thickness=10)
+
+    # PILに変換してテキスト描画
+    pil_img = Image.fromarray(img_rgb)
+    draw = ImageDraw.Draw(pil_img)
+
     for i, (name, (x0, y0, x1, y1), m) in enumerate(comps):
         area_px = np.count_nonzero(m)
         if area_px == 0:
@@ -127,37 +154,46 @@ def draw_results(img_bgr: np.ndarray, comps, food_mask: np.ndarray):
         food_px = np.count_nonzero(cv2.bitwise_and(food_mask, m))
         ratio = max(0.0, (area_px - food_px) / area_px * 100.0)
         ratio_int = int(round(ratio))
+        txt = f"{ratio_int}%"
 
-        # 枠線
-        color = colors[i % len(colors)]
-        cv2.rectangle(output, (x0, y0), (x1, y1), color, thickness=10)
-
-        # --- 文字サイズを枠サイズで自動調整 ---
+        # --- フォントサイズ自動調整（枠サイズ基準） ---
         box_w = max(1, x1 - x0)
         box_h = max(1, y1 - y0)
         box_size = min(box_w, box_h)
 
-        font_scale = box_size / 200.0
-        font_scale = max(0.8, min(font_scale, 2.5))
+        # だいたい枠の25%を文字サイズに
+        font_size = int(box_size * 0.25)
+        font_size = max(18, min(font_size, 120))
+        font = _load_font(font_path, font_size)
 
-        thickness_main = max(2, int(font_scale * 3))
-        thickness_border = max(6, int(font_scale * 8))
+        # テキストサイズ取得（Pillowの新旧に対応）
+        try:
+            tb = draw.textbbox((0, 0), txt, font=font)
+            text_w = tb[2] - tb[0]
+            text_h = tb[3] - tb[1]
+        except Exception:
+            text_w, text_h = draw.textsize(txt, font=font)
 
-        # 中央寄せ
-        cx = int((x0 + x1) / 2)
-        cy = int((y0 + y1) / 2)
-        txt = f"{ratio_int}%"
-
-        (text_w, text_h), _ = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness_main)
+        # 中央配置
+        cx = (x0 + x1) // 2
+        cy = (y0 + y1) // 2
         tx = cx - text_w // 2
-        ty = cy + text_h // 2
+        ty = cy - text_h // 2
 
-        # 縁取り → 本体
-        cv2.putText(output, txt, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0, 0, 0), thickness_border, cv2.LINE_AA)
-        cv2.putText(output, txt, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), thickness_main, cv2.LINE_AA)
+        # 縁取り（太さはフォントサイズに連動）
+        outline = max(2, int(font_size * 0.08))
+        for dx in range(-outline, outline + 1):
+            for dy in range(-outline, outline + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                draw.text((tx + dx, ty + dy), txt, font=font, fill=(0, 0, 0))
+
+        # 本体（白）
+        draw.text((tx, ty), txt, font=font, fill=(255, 255, 255))
 
         res_txts.append((name, ratio))
 
+    output = np.array(pil_img)  # PIL→numpy(RGB)
     return output, res_txts
 
 # =========================================================
@@ -176,6 +212,15 @@ with st.sidebar:
     st.write("▼ 認識が悪い場合のみ調整")
     v_min = st.slider("ご飯の白さ (明度)", 0, 255, 170)
     s_max = st.slider("彩度上限", 0, 255, 70)
+
+    st.divider()
+    st.write("▼ 表示フォント（PIL描画）")
+
+    # Streamlit Cloud/Linux想定: Noto Sans CJK が入っていることが多い
+    # Windowsローカルなら "C:/Windows/Fonts/meiryo.ttc" などに変更してください
+    default_font_path = "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"
+    font_path = st.text_input("フォントファイルパス", value=default_font_path)
+    st.caption("例) Windows: C:/Windows/Fonts/meiryo.ttc")
 
 uploads = st.file_uploader(
     "画像をアップロードしてください",
@@ -204,7 +249,8 @@ if uploads:
             # ★ 4分割固定テンプレで区画生成
             comps = build_compartments_fixed_4(b_mask, bbox)
 
-            render, area_details = draw_results(img, comps, f_mask)
+            # ★ draw_results（PILでフォント描画）
+            render, area_details = draw_results(img, comps, f_mask, font_path)
 
             # 全体空白率
             total_ratio = (np.count_nonzero(b_mask) - np.count_nonzero(f_mask)) / max(1, np.count_nonzero(b_mask)) * 100.0
@@ -244,4 +290,3 @@ if uploads:
                 fname = df.iloc[idx]["ファイル名"]
                 st.subheader(f"🔍 解析結果: {fname}")
                 st.image(previews[fname], use_container_width=True)
-
