@@ -1,9 +1,8 @@
-streamlit>=1.31.0
 opencv-python-headless
 numpy
 pandas
+streamlit
 torch
 torchvision
 timm
 Pillow
-altair<5
