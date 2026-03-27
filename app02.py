@@ -11,7 +11,7 @@ import json
 import io
 
 # --- 初期設定 ---
-st.set_page_config(page_title="Bento Checker Pro", layout="wide", page_icon="🍱")
+st.set_page_config(page_title="Bento Checker Pro", layout="wide", page_icon="??")
 
 DB_FILE = "shared_history.csv"
 SAVE_DIR = "history_images"
@@ -60,13 +60,6 @@ def get_anthropic_client():
     return anthropic.Anthropic(api_key=api_key)
 
 
-
-    if not api_key:
-        st.error("ANTHROPIC_API_KEY が設定されていません。")
-        st.stop()
-    return anthropic.Anthropic(api_key=api_key)
-
-
 def pil_to_base64(img: Image.Image, fmt="JPEG") -> str:
     buf = io.BytesIO()
     img.save(buf, format=fmt)
@@ -87,9 +80,9 @@ def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> d
 5. 食材（お米・おかず）が占めている面積のみ埋まっているとカウント
 
 空き率の目安：
-- 0〜15%：ほぼ全面に食材が詰まっている
-- 15〜30%：一部に隙間がある
-- 30〜50%：食材が少なく隙間が目立つ
+- 0?15%：ほぼ全面に食材が詰まっている
+- 15?30%：一部に隙間がある
+- 30?50%：食材が少なく隙間が目立つ
 - 50%以上：かなり空いている
 
 返答形式（JSONのみ・前後に文字を入れない）:
@@ -126,7 +119,7 @@ def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
     prompt = f"""お弁当の品質検査結果です：
 {summary}
 
-品質検査員として充填状況の総評を日本語で2〜3文で述べてください。改善が必要な点があれば具体的に指摘してください。"""
+品質検査員として充填状況の総評を日本語で2?3文で述べてください。改善が必要な点があれば具体的に指摘してください。"""
     b64 = pil_to_base64(img)
     try:
         msg = client.messages.create(
@@ -146,80 +139,107 @@ def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
 
 
 # --- トレー検出・射影変換 ---
-# --- エリア分割ロジック（食材エリア直接検出）---
+def detect_tray_corners(img_bgr):
+    """赤いトレーの四隅を検出する"""
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    mask1 = cv2.inRange(hsv, np.array([0,  60, 60]),  np.array([15, 255, 200]))
+    mask2 = cv2.inRange(hsv, np.array([165,60, 60]),  np.array([180,255,200]))
+    red_mask = cv2.bitwise_or(mask1, mask2)
+    kernel = np.ones((15,15), np.uint8)
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_CLOSE, kernel)
+    red_mask = cv2.morphologyEx(red_mask, cv2.MORPH_OPEN, kernel)
+    contours, _ = cv2.findContours(red_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+    hull = cv2.convexHull(contours[0])
+    peri = cv2.arcLength(hull, True)
+    for eps in [0.01, 0.02, 0.03, 0.05, 0.08, 0.10]:
+        approx = cv2.approxPolyDP(hull, eps * peri, True)
+        if len(approx) == 4:
+            return approx.reshape(4, 2)
+    return None
+
+
+def order_corners(pts):
+    """四隅を左上・右上・右下・左下の順に整列"""
+    rect = np.zeros((4, 2), dtype=np.float32)
+    s = pts.sum(axis=1)
+    rect[0] = pts[np.argmin(s)]
+    rect[2] = pts[np.argmax(s)]
+    diff = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(diff)]
+    rect[3] = pts[np.argmax(diff)]
+    return rect
+
+
+def get_warp_matrix(img_bgr):
+    """射影変換行列・逆行列・補正後サイズを返す。失敗時はNone"""
+    corners = detect_tray_corners(img_bgr)
+    if corners is None:
+        return None, None, None, None
+    rect = order_corners(corners.astype(np.float32))
+    tl, tr, br, bl = rect
+    warp_w = int(max(np.linalg.norm(tr - tl), np.linalg.norm(br - bl)))
+    warp_h = int(max(np.linalg.norm(bl - tl), np.linalg.norm(br - tr)))
+    dst = np.array([[0,0],[warp_w-1,0],[warp_w-1,warp_h-1],[0,warp_h-1]], dtype=np.float32)
+    M     = cv2.getPerspectiveTransform(rect, dst)
+    M_inv = cv2.getPerspectiveTransform(dst, rect)
+    return M, M_inv, warp_w, warp_h
+
+
+# --- エリア分割ロジック ---
 def detect_bento_areas(img_bgr: np.ndarray):
     """
-    トレーの赤い仕切りで囲まれた食材エリアを直接検出。
-    戻り値: areas（矩形座標 y1,y2,x1,x2）
-    失敗時は固定比率フォールバック。
+    射影補正後の固定比率でエリアを定義。
+    戻り値: areas_warped（補正後座標の矩形）, areas_orig（元画像座標の台形4点）, M, M_inv, warp_w, warp_h
     """
     h, w = img_bgr.shape[:2]
+    M, M_inv, warp_w, warp_h = get_warp_matrix(img_bgr)
 
-    # トレー色マスク（暗めの赤茶色）
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    tray1 = cv2.inRange(hsv, np.array([0,  120, 60]),  np.array([10, 255, 160]))
-    tray2 = cv2.inRange(hsv, np.array([170,120, 60]),  np.array([180,255, 160]))
-    tray_mask = cv2.bitwise_or(tray1, tray2)
-    kernel = np.ones((20,20), np.uint8)
-    tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_CLOSE, kernel)
-    tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_OPEN, kernel)
-
-    # トレー全体を塗りつぶし
-    contours, _ = cv2.findContours(tray_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
-        filled = np.zeros_like(tray_mask)
-        cv2.drawContours(filled, [contours[0]], -1, 255, -1)
-
-        # 食材エリア = トレー内側の非赤部分
-        food_mask = cv2.bitwise_and(filled, cv2.bitwise_not(tray_mask))
-        food_contours, _ = cv2.findContours(food_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        min_area = h * w * 0.03
-        food_contours = [c for c in food_contours if cv2.contourArea(c) > min_area]
-        food_contours = sorted(food_contours, key=cv2.contourArea, reverse=True)[:4]
-
-        if len(food_contours) == 4:
-            boxes = []
-            for c in food_contours:
-                fx, fy, fw, fh = cv2.boundingRect(c)
-                boxes.append({'x1':fx,'y1':fy,'x2':fx+fw,'y2':fy+fh,'cx':fx+fw/2,'cy':fy+fh/2})
-
-            cy_med = np.median([b['cy'] for b in boxes])
-            top = sorted([b for b in boxes if b['cy'] < cy_med], key=lambda b: b['cx'])
-            bot = sorted([b for b in boxes if b['cy'] >= cy_med], key=lambda b: b['cx'])
-
-            if len(top) == 2 and len(bot) == 2:
-                tl, tr, bl, br = top[0], top[1], bot[0], bot[1]
-                # 上右の右端を下右の右端に揃える
-                tr_x2 = br['x2']
-                areas = {
-                    "上左（小おかず）": (tl['y1'], tl['y2'], tl['x1'], tl['x2']),
-                    "上右（大おかず）": (tr['y1'], tr['y2'], tr['x1'], tr_x2),
-                    "下左（ごはん）":   (bl['y1'], bl['y2'], bl['x1'], bl['x2']),
-                    "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
-                }
-                return areas
-
-    # フォールバック: 固定比率
-    y1          = int(h * 0.10)
-    h_split     = int(h * 0.46)
-    x1_top      = int(w * 0.10)
-    x2_top      = int(w * 0.92)
-    v_top       = int(w * 0.36)
-    h_split_bot = int(h * 0.50)
-    y2          = int(h * 0.92)
-    x1_bot      = int(w * 0.13)
-    x2_bot      = int(w * 0.92)
-    v_bot       = int(w * 0.63)
-    return {
-        "上左（小おかず）": (y1,          h_split,     x1_top, v_top),
-        "上右（大おかず）": (y1,          h_split,     v_top,  x2_top),
-        "下左（ごはん）":   (h_split_bot, y2,          x1_bot, v_bot),
-        "下右（小おかず）": (h_split_bot, y2,          v_bot,  x2_bot),
-    }
+    if M is not None:
+        ww, wh = warp_w, warp_h
+        areas_warped = {
+            "上左（小おかず）": (int(wh*0.10), int(wh*0.46), int(ww*0.10), int(ww*0.36)),
+            "上右（大おかず）": (int(wh*0.10), int(wh*0.46), int(ww*0.36), int(ww*0.96)),
+            "下左（ごはん）":   (int(wh*0.50), int(wh*0.92), int(ww*0.13), int(ww*0.63)),
+            "下右（小おかず）": (int(wh*0.50), int(wh*0.92), int(ww*0.63), int(ww*0.92)),
+        }
+        # 補正後座標を元画像座標に逆変換（描画用）
+        areas_orig = {}
+        for name, (y1, y2, x1, x2) in areas_warped.items():
+            pts_w = np.array([[x1,y1],[x2,y1],[x2,y2],[x1,y2]], dtype=np.float32).reshape(-1,1,2)
+            pts_o = cv2.perspectiveTransform(pts_w, M_inv).reshape(-1,2).astype(int)
+            areas_orig[name] = pts_o
+        return areas_warped, areas_orig, M, M_inv, warp_w, warp_h
+    else:
+        # フォールバック: 固定比率矩形
+        y1          = int(h * 0.10)
+        h_split     = int(h * 0.46)
+        x1_top      = int(w * 0.10)
+        x2_top      = int(w * 0.96)
+        v_top       = int(w * 0.36)
+        h_split_bot = int(h * 0.50)
+        y2          = int(h * 0.92)
+        x1_bot      = int(w * 0.13)
+        x2_bot      = int(w * 0.92)
+        v_bot       = int(w * 0.63)
+        areas_warped = {
+            "上左（小おかず）": (y1, h_split,     x1_top, v_top),
+            "上右（大おかず）": (y1, h_split,     v_top,  x2_top),
+            "下左（ごはん）":   (h_split_bot, y2, x1_bot, v_bot),
+            "下右（小おかず）": (h_split_bot, y2, v_bot,  x2_bot),
+        }
+        areas_orig = {
+            "上左（小おかず）": np.array([[x1_top,y1],[v_top,y1],[v_top,h_split],[x1_top,h_split]]),
+            "上右（大おかず）": np.array([[v_top,y1],[x2_top,y1],[x2_top,h_split],[v_top,h_split]]),
+            "下左（ごはん）":   np.array([[x1_bot,h_split_bot],[v_bot,h_split_bot],[v_bot,y2],[x1_bot,y2]]),
+            "下右（小おかず）": np.array([[v_bot,h_split_bot],[x2_bot,h_split_bot],[x2_bot,y2],[v_bot,y2]]),
+        }
+        return areas_warped, areas_orig, None, None, None, None
 
 
-def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> Image.Image:
+def draw_results_on_image(img_pil: Image.Image, areas_orig: dict, results: list) -> Image.Image:
     output = img_pil.copy()
     result_map = {r["name"]: r for r in results}
 
@@ -239,7 +259,7 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
                 pass
             break
 
-    for name, (y1, y2, x1, x2) in areas.items():
+    for name, pts in areas_orig.items():
         r = result_map.get(name, {})
         pct = r.get("emptiness_pct", 0)
 
@@ -253,16 +273,17 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
             color = (231, 76, 60)
             alpha = 50
 
+        poly = [tuple(p) for p in pts]
         overlay = Image.new('RGBA', output.size, (0, 0, 0, 0))
         ov_draw = ImageDraw.Draw(overlay)
-        ov_draw.rectangle([x1, y1, x2, y2], fill=(*color, alpha))
+        ov_draw.polygon(poly, fill=(*color, alpha))
         output = Image.alpha_composite(output.convert('RGBA'), overlay).convert('RGB')
         draw = ImageDraw.Draw(output, 'RGBA')
 
         line_w = max(3, int(w * 0.004))
-        draw.rectangle([x1, y1, x2, y2], outline=(*color, 230), width=line_w)
+        draw.line(poly + [poly[0]], fill=(*color, 230), width=line_w)
 
-        tx, ty = x1 + 10, y1 + 10
+        tx, ty = int(pts[0][0]) + 10, int(pts[0][1]) + 10
         text = f"{pct:.1f}%"
         bbox = draw.textbbox((0, 0), text, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
@@ -319,7 +340,7 @@ for key, val in [('last_processed_file', None), ('selected_idx', None)]:
 with st.sidebar:
     st.markdown("""
     <div style="padding: 12px 0 20px 0;">
-        <div style="font-family: 'Space Mono', monospace; font-size: 1.1rem; color: #f0ede8; font-weight: 700;">🍱 Bento Checker</div>
+        <div style="font-family: 'Space Mono', monospace; font-size: 1.1rem; color: #f0ede8; font-weight: 700;">?? Bento Checker</div>
         <div style="font-size: 0.7rem; color: #888; letter-spacing: 2px; margin-top: 2px;">HISTORY</div>
     </div>
     """, unsafe_allow_html=True)
@@ -342,14 +363,14 @@ with st.sidebar:
         real_idx = len(history) - 1 - idx
         col1, col2 = st.columns([0.82, 0.18])
         with col1:
-            icon = "✅" if item.get('status') == "PASS" else "❌"
+            icon = "?" if item.get('status') == "PASS" else "?"
             avg = item.get('avg_emptiness', '?')
             label = f"{icon} {item.get('time')}  ({avg}%)"
             if st.button(label, key=f"h_{real_idx}", use_container_width=True):
                 st.session_state.selected_idx = real_idx
                 st.rerun()
         with col2:
-            if st.button("🗑", key=f"del_{real_idx}"):
+            if st.button("??", key=f"del_{real_idx}"):
                 delete_history_item(real_idx)
                 if st.session_state.selected_idx == real_idx:
                     st.session_state.selected_idx = None
@@ -359,7 +380,7 @@ with st.sidebar:
 # =====================
 # メイン画面
 # =====================
-st.markdown('<div class="title-block">🍱 Bento Checker Pro</div>', unsafe_allow_html=True)
+st.markdown('<div class="title-block">?? Bento Checker Pro</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle-block">AI-Powered Filling Analysis</div>', unsafe_allow_html=True)
 
 client = get_anthropic_client()
@@ -424,17 +445,25 @@ else:
         img_bgr  = cv2.cvtColor(np.array(img_orig), cv2.COLOR_RGB2BGR)
 
         progress_bar.progress(10, text="トレーを検出・補正中...")
-        areas = detect_bento_areas(img_bgr)
+        areas_warped, areas_orig, M, M_inv, warp_w, warp_h = detect_bento_areas(img_bgr)
+
+        # 射影補正済み画像を用意（ROI切り出しに使用）
+        if M is not None:
+            warped_bgr = cv2.warpPerspective(img_bgr, M, (warp_w, warp_h))
+            warped_pil = Image.fromarray(cv2.cvtColor(warped_bgr, cv2.COLOR_BGR2RGB))
+        else:
+            warped_pil = img_orig
 
         results = []
-        total_areas = len(areas)
+        total_areas = len(areas_warped)
 
-        for i, (name, (y1, y2, x1, x2)) in enumerate(areas.items()):
+        for i, (name, (y1, y2, x1, x2)) in enumerate(areas_warped.items()):
             progress_bar.progress(
                 20 + int(60 * i / total_areas),
                 text=f"Claude Vision で「{name}」を解析中... ({i+1}/{total_areas})"
             )
-            roi = img_orig.crop((x1, y1, x2, y2))
+            # 補正済み画像から直接矩形ROIを切り出す
+            roi = warped_pil.crop((x1, y1, x2, y2))
             analysis = analyze_area_with_claude(client, roi, name)
             results.append({
                 "name": name,
@@ -450,7 +479,7 @@ else:
         ai_comment = analyze_overall_with_claude(client, img_orig, results)
 
         progress_bar.progress(92, text="結果を描画中...")
-        output_pil = draw_results_on_image(img_orig, areas, results)
+        output_pil = draw_results_on_image(img_orig, areas_orig, results)
 
         path = f"{SAVE_DIR}/res_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
         output_pil.save(path, quality=92)
@@ -474,12 +503,12 @@ else:
     elif not up:
         st.markdown("""
         <div style="text-align:center; padding: 48px 24px; color: #aaa;">
-            <div style="font-size: 3rem; margin-bottom: 16px;">📷</div>
+            <div style="font-size: 3rem; margin-bottom: 16px;">??</div>
             <div style="font-size: 0.9rem; line-height: 1.8;">
                 お弁当の写真をアップロードすると<br>
                 Claude Vision AI が各エリアの充填率を解析します<br><br>
                 <span style="font-size:0.75rem; color:#ccc;">
-                ✓ 斜め補正対応 &nbsp;|&nbsp; ✓ AI視覚判定 &nbsp;|&nbsp; ✓ 高精度解析
+                ? 斜め補正対応 &nbsp;|&nbsp; ? AI視覚判定 &nbsp;|&nbsp; ? 高精度解析
                 </span>
             </div>
         </div>
