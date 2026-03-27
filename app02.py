@@ -52,7 +52,10 @@ div[data-testid="stFileUploader"] { background: white; border: 2px dashed #d0ccc
 # --- Anthropic クライアント ---
 @st.cache_resource
 def get_anthropic_client():
-    api_key = "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"
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        st.error("ANTHROPIC_API_KEY が設定されていません。")
+        st.stop()
     return anthropic.Anthropic(api_key=api_key)
 
 
