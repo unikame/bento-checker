@@ -48,7 +48,6 @@ div[data-testid="stFileUploader"] { background: white; border: 2px dashed #d0ccc
 </style>
 """, unsafe_allow_html=True)
 
-
 # --- Anthropic クライアント ---
 @st.cache_resource
 def get_anthropic_client():
@@ -57,13 +56,11 @@ def get_anthropic_client():
     except Exception:
         st.error("ANTHROPIC_API_KEY が設定されていません。")
         st.stop()
-    return anthropic.Anthropic(api_key=api_key)
-
-
 
     if not api_key:
-        st.error("ANTHROPIC_API_KEY が設定されていません。")
+        st.error("ANTHROPIC_API_KEY が空です。")
         st.stop()
+
     return anthropic.Anthropic(api_key=api_key)
 
 
@@ -145,33 +142,23 @@ def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
         return f"総評の生成に失敗しました: {e}"
 
 
-# --- トレー検出・射影変換 ---
-# --- エリア分割ロジック（食材エリア直接検出）---
 def detect_bento_areas(img_bgr: np.ndarray):
-    """
-    トレーの赤い仕切りで囲まれた食材エリアを直接検出。
-    戻り値: areas（矩形座標 y1,y2,x1,x2）
-    失敗時は固定比率フォールバック。
-    """
     h, w = img_bgr.shape[:2]
 
-    # トレー色マスク（暗めの赤茶色）
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    tray1 = cv2.inRange(hsv, np.array([0,  120, 60]),  np.array([10, 255, 160]))
-    tray2 = cv2.inRange(hsv, np.array([170,120, 60]),  np.array([180,255, 160]))
+    tray1 = cv2.inRange(hsv, np.array([0, 120, 60]), np.array([10, 255, 160]))
+    tray2 = cv2.inRange(hsv, np.array([170, 120, 60]), np.array([180, 255, 160]))
     tray_mask = cv2.bitwise_or(tray1, tray2)
-    kernel = np.ones((20,20), np.uint8)
+    kernel = np.ones((20, 20), np.uint8)
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_CLOSE, kernel)
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_OPEN, kernel)
 
-    # トレー全体を塗りつぶし
     contours, _ = cv2.findContours(tray_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         contours = sorted(contours, key=cv2.contourArea, reverse=True)
         filled = np.zeros_like(tray_mask)
         cv2.drawContours(filled, [contours[0]], -1, 255, -1)
 
-        # 食材エリア = トレー内側の非赤部分
         food_mask = cv2.bitwise_and(filled, cv2.bitwise_not(tray_mask))
         food_contours, _ = cv2.findContours(food_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         min_area = h * w * 0.03
@@ -182,40 +169,37 @@ def detect_bento_areas(img_bgr: np.ndarray):
             boxes = []
             for c in food_contours:
                 fx, fy, fw, fh = cv2.boundingRect(c)
-                boxes.append({'x1':fx,'y1':fy,'x2':fx+fw,'y2':fy+fh,'cx':fx+fw/2,'cy':fy+fh/2})
+                boxes.append({"x1": fx, "y1": fy, "x2": fx + fw, "y2": fy + fh, "cx": fx + fw / 2, "cy": fy + fh / 2})
 
-            cy_med = np.median([b['cy'] for b in boxes])
-            top = sorted([b for b in boxes if b['cy'] < cy_med], key=lambda b: b['cx'])
-            bot = sorted([b for b in boxes if b['cy'] >= cy_med], key=lambda b: b['cx'])
+            cy_med = np.median([b["cy"] for b in boxes])
+            top = sorted([b for b in boxes if b["cy"] < cy_med], key=lambda b: b["cx"])
+            bot = sorted([b for b in boxes if b["cy"] >= cy_med], key=lambda b: b["cx"])
 
             if len(top) == 2 and len(bot) == 2:
                 tl, tr, bl, br = top[0], top[1], bot[0], bot[1]
-                # 上右の右端を下右の右端に揃える
-                tr_x2 = br['x2']
-                areas = {
-                    "上左（小おかず）": (tl['y1'], tl['y2'], tl['x1'], tl['x2']),
-                    "上右（大おかず）": (tr['y1'], tr['y2'], tr['x1'], tr_x2),
-                    "下左（ごはん）":   (bl['y1'], bl['y2'], bl['x1'], bl['x2']),
-                    "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
+                tr_x2 = br["x2"]
+                return {
+                    "上左（小おかず）": (tl["y1"], tl["y2"], tl["x1"], tl["x2"]),
+                    "上右（大おかず）": (tr["y1"], tr["y2"], tr["x1"], tr_x2),
+                    "下左（ごはん）": (bl["y1"], bl["y2"], bl["x1"], bl["x2"]),
+                    "下右（小おかず）": (br["y1"], br["y2"], br["x1"], br["x2"]),
                 }
-                return areas
 
-    # フォールバック: 固定比率
-    y1          = int(h * 0.10)
-    h_split     = int(h * 0.46)
-    x1_top      = int(w * 0.10)
-    x2_top      = int(w * 0.92)
-    v_top       = int(w * 0.36)
+    y1 = int(h * 0.10)
+    h_split = int(h * 0.46)
+    x1_top = int(w * 0.10)
+    x2_top = int(w * 0.92)
+    v_top = int(w * 0.36)
     h_split_bot = int(h * 0.50)
-    y2          = int(h * 0.92)
-    x1_bot      = int(w * 0.13)
-    x2_bot      = int(w * 0.92)
-    v_bot       = int(w * 0.63)
+    y2 = int(h * 0.92)
+    x1_bot = int(w * 0.13)
+    x2_bot = int(w * 0.92)
+    v_bot = int(w * 0.63)
     return {
-        "上左（小おかず）": (y1,          h_split,     x1_top, v_top),
-        "上右（大おかず）": (y1,          h_split,     v_top,  x2_top),
-        "下左（ごはん）":   (h_split_bot, y2,          x1_bot, v_bot),
-        "下右（小おかず）": (h_split_bot, y2,          v_bot,  x2_bot),
+        "上左（小おかず）": (y1, h_split, x1_top, v_top),
+        "上右（大おかず）": (y1, h_split, v_top, x2_top),
+        "下左（ごはん）": (h_split_bot, y2, x1_bot, v_bot),
+        "下右（小おかず）": (h_split_bot, y2, v_bot, x2_bot),
     }
 
 
@@ -235,7 +219,7 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
         if os.path.exists(fp):
             try:
                 font = ImageFont.truetype(fp, font_size)
-            except:
+            except Exception:
                 pass
             break
 
@@ -253,11 +237,11 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
             color = (231, 76, 60)
             alpha = 50
 
-        overlay = Image.new('RGBA', output.size, (0, 0, 0, 0))
+        overlay = Image.new("RGBA", output.size, (0, 0, 0, 0))
         ov_draw = ImageDraw.Draw(overlay)
         ov_draw.rectangle([x1, y1, x2, y2], fill=(*color, alpha))
-        output = Image.alpha_composite(output.convert('RGBA'), overlay).convert('RGB')
-        draw = ImageDraw.Draw(output, 'RGBA')
+        output = Image.alpha_composite(output.convert("RGBA"), overlay).convert("RGB")
+        draw = ImageDraw.Draw(output, "RGBA")
 
         line_w = max(3, int(w * 0.004))
         draw.rectangle([x1, y1, x2, y2], outline=(*color, 230), width=line_w)
@@ -266,37 +250,36 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
         text = f"{pct:.1f}%"
         bbox = draw.textbbox((0, 0), text, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.rectangle([tx-4, ty-4, tx+tw+8, ty+th+8], fill=(0,0,0,160), outline=(255,255,255,80))
-        draw.text((tx+2, ty+2), text, font=font, fill=(0,0,0,120))
-        draw.text((tx, ty), text, font=font, fill=(255,255,255,240))
+        draw.rectangle([tx - 4, ty - 4, tx + tw + 8, ty + th + 8], fill=(0, 0, 0, 160), outline=(255, 255, 255, 80))
+        draw.text((tx + 2, ty + 2), text, font=font, fill=(0, 0, 0, 120))
+        draw.text((tx, ty), text, font=font, fill=(255, 255, 255, 240))
 
     return output
 
 
-# --- 履歴管理 ---
 def load_shared_history():
     if os.path.exists(DB_FILE) and os.path.getsize(DB_FILE) > 0:
         try:
-            return pd.read_csv(DB_FILE).to_dict('records')
-        except:
+            return pd.read_csv(DB_FILE).to_dict("records")
+        except Exception:
             return []
     return []
 
 
 def save_history(record: dict):
     df = pd.DataFrame([record])
-    df.to_csv(DB_FILE, mode='a', header=not os.path.exists(DB_FILE), index=False)
+    df.to_csv(DB_FILE, mode="a", header=not os.path.exists(DB_FILE), index=False)
 
 
 def delete_history_item(idx: int) -> bool:
     history = load_shared_history()
     if 0 <= idx < len(history):
         item = history.pop(idx)
-        img_p = item.get('img_path', '')
+        img_p = item.get("img_path", "")
         if img_p and os.path.exists(str(img_p)):
             try:
                 os.remove(img_p)
-            except:
+            except Exception:
                 pass
         if history:
             pd.DataFrame(history).to_csv(DB_FILE, index=False)
@@ -307,15 +290,11 @@ def delete_history_item(idx: int) -> bool:
     return False
 
 
-# --- セッション初期化 ---
-for key, val in [('last_processed_file', None), ('selected_idx', None)]:
+for key, val in [("last_processed_file", None), ("selected_idx", None)]:
     if key not in st.session_state:
         st.session_state[key] = val
 
 
-# =====================
-# サイドバー
-# =====================
 with st.sidebar:
     st.markdown("""
     <div style="padding: 12px 0 20px 0;">
@@ -326,11 +305,11 @@ with st.sidebar:
 
     with st.container():
         st.markdown('<div class="new-scan-btn">', unsafe_allow_html=True)
-        if st.button("＋  新規スキャン", use_container_width=True):
+        if st.button("＋  新規スキャン", width="stretch"):
             st.session_state.selected_idx = None
             st.session_state.last_processed_file = None
             st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
 
@@ -342,10 +321,10 @@ with st.sidebar:
         real_idx = len(history) - 1 - idx
         col1, col2 = st.columns([0.82, 0.18])
         with col1:
-            icon = "✅" if item.get('status') == "PASS" else "❌"
-            avg = item.get('avg_emptiness', '?')
+            icon = "✅" if item.get("status") == "PASS" else "❌"
+            avg = item.get("avg_emptiness", "?")
             label = f"{icon} {item.get('time')}  ({avg}%)"
-            if st.button(label, key=f"h_{real_idx}", use_container_width=True):
+            if st.button(label, key=f"h_{real_idx}", width="stretch"):
                 st.session_state.selected_idx = real_idx
                 st.rerun()
         with col2:
@@ -356,36 +335,32 @@ with st.sidebar:
                 st.rerun()
 
 
-# =====================
-# メイン画面
-# =====================
 st.markdown('<div class="title-block">🍱 Bento Checker Pro</div>', unsafe_allow_html=True)
 st.markdown('<div class="subtitle-block">AI-Powered Filling Analysis</div>', unsafe_allow_html=True)
 
 client = get_anthropic_client()
 history = load_shared_history()
 
-# --- 履歴詳細表示 ---
 if st.session_state.selected_idx is not None and st.session_state.selected_idx < len(history):
     data = history[st.session_state.selected_idx]
     col_img, col_info = st.columns([1.3, 0.7])
 
     with col_img:
-        img_p = data.get('img_path', '')
+        img_p = data.get("img_path", "")
         if os.path.exists(str(img_p)):
-            st.image(img_p, use_container_width=True)
+            st.image(img_p, width="stretch")
         else:
             st.error("画像ファイルが見つかりません。")
 
     with col_info:
-        status_val = data.get('status', 'FAIL')
+        status_val = data.get("status", "FAIL")
         badge_cls = "pass" if status_val == "PASS" else "fail"
         st.markdown(f'<div class="status-badge {badge_cls}">{status_val}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="section-label">分析日時</div><div style="margin-bottom:12px; font-size:0.95rem;">{data.get("time")}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="section-label">平均空き率</div><div style="font-family:Space Mono,monospace; font-size:2rem; font-weight:700; margin-bottom:12px;">{data.get("avg_emptiness", "?")}%</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="section-label">エリア詳細</div>', unsafe_allow_html=True)
-        detail_text = data.get('detail_text', '')
+        detail_text = data.get("detail_text", "")
         for part in detail_text.split(" / "):
             if ":" in part:
                 nm, pct_str = part.rsplit(":", 1)
@@ -397,23 +372,21 @@ if st.session_state.selected_idx is not None and st.session_state.selected_idx <
                         <div class="metric-value">{pct:.1f}%</div>
                         <div class="metric-label">空き率</div>
                     </div>''', unsafe_allow_html=True)
-                except:
+                except Exception:
                     st.write(part)
 
-        ai_comment = data.get('ai_comment', '')
+        ai_comment = data.get("ai_comment", "")
         if ai_comment:
             st.markdown('<div class="section-label" style="margin-top:12px;">AI総評</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="ai-comment">{ai_comment}</div>', unsafe_allow_html=True)
 
-        if st.button("← 戻る", use_container_width=True):
+        if st.button("← 戻る", width="stretch"):
             st.session_state.selected_idx = None
             st.rerun()
-
-# --- 新規スキャン ---
 else:
     up = st.file_uploader(
         "お弁当の写真をアップロード",
-        type=['jpg', 'jpeg', 'png'],
+        type=["jpg", "jpeg", "png"],
         help="JPG または PNG 形式の画像をアップロードしてください"
     )
 
@@ -421,7 +394,7 @@ else:
         progress_bar = st.progress(0, text="画像を読み込んでいます...")
 
         img_orig = Image.open(up).convert("RGB")
-        img_bgr  = cv2.cvtColor(np.array(img_orig), cv2.COLOR_RGB2BGR)
+        img_bgr = cv2.cvtColor(np.array(img_orig), cv2.COLOR_RGB2BGR)
 
         progress_bar.progress(10, text="トレーを検出・補正中...")
         areas = detect_bento_areas(img_bgr)
