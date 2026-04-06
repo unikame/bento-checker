@@ -69,24 +69,30 @@ def pil_to_base64(img: Image.Image, fmt="JPEG") -> str:
 # --- Claude Vision による充填率判定 ---
 def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> dict:
     prompt = f"""あなたはお弁当の品質検査AIです。
-この画像は「{area_name}」エリアを真上から撮影・補正したものです。
-空き率（食材が占めていない面積の割合）を厳密に計算してJSON形式のみで返してください。
+この画像は「{area_name}」エリアの写真です。
+画像をよく見て、空き率（トレーの赤い底面が見えている面積の割合）を正確に数値で答えてください。
 
-判定ルール：
-1. トレーの赤い底面・菱形模様が見えている面積 → 空き
-2. 食材が偏っていても、空いている部分は空きとしてカウント
-3. カップ・仕切り紙は容器なので空き率の計算に含めない
-4. カップの中に食材が入っていれば埋まっているとみなす
-5. 食材（お米・おかず）が占めている面積のみ埋まっているとカウント
+【判定ルール】
+- トレーの赤い底面・菱形模様が見えている → その面積が空き
+- カップや仕切り紙は容器なので無視する
+- カップの中に食材があれば埋まっているとみなす
+- 食材が偏っていても、空いている部分は空きとカウント
+- 見た目で感じる「スカスカ感」を正直に数値化すること
 
-空き率の目安：
-- 0〜15%：ほぼ全面に食材が詰まっている
-- 15〜30%：一部に隙間がある
-- 30〜50%：食材が少なく隙間が目立つ
-- 50%以上：かなり空いている
+【よくある間違い】
+- 食材が少なくてもカップが大きいと埋まっているように見えるが、実際の食材量で判断すること
+- 隙間が少しでもあれば正直に加算すること
+- 迷ったら多めに（空きが多い方向に）評価すること
 
-返答形式（JSONのみ・前後に文字を入れない）:
-{{"emptiness_pct": 数値, "confidence": "high/medium/low", "reason": "理由を30字以内で"}}"""
+【空き率の基準】
+- 0〜10%：食材がぎっしり詰まっている
+- 10〜20%：わずかに隙間がある
+- 20〜35%：隙間が目立つ、やや少ない
+- 35〜50%：明らかに少ない
+- 50%以上：かなりスカスカ
+
+返答形式（JSONのみ・他の文字は一切不要）:
+{{"emptiness_pct": 数値, "confidence": "high/medium/low", "reason": "具体的な理由を30字以内で"}}"""
 
     b64 = pil_to_base64(area_img)
     try:
@@ -203,18 +209,20 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
     w, h = img_pil.size
     font_size = max(20, int(w * 0.035))
     font_paths = [
-        "/System/Library/Fonts/Helvetica.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Bold.otf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
         "c:/Windows/Fonts/arialbd.ttf",
     ]
-    font = ImageFont.load_default()
+    font = ImageFont.load_default(size=font_size)
     for fp in font_paths:
         if os.path.exists(fp):
             try:
                 font = ImageFont.truetype(fp, font_size)
+                break
             except:
                 pass
-            break
 
     # 半透明オーバーレイを一括で作成
     output = img_pil.convert('RGBA')
