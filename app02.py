@@ -237,7 +237,7 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
     output = Image.alpha_composite(output, overlay).convert('RGB')
     draw = ImageDraw.Draw(output, 'RGBA')
 
-    line_w = max(3, int(w * 0.004))
+    line_w = max(4, int(w * 0.005))
     for name, (y1, y2, x1, x2) in areas.items():
         if name == "下左（ごはん）":
             continue
@@ -250,15 +250,21 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
         else:
             color = (231, 76, 60)
 
-        draw.rectangle([x1, y1, x2, y2], outline=(*color, 230), width=line_w)
+        draw.rectangle([x1, y1, x2, y2], outline=(*color, 255), width=line_w)
 
-        tx, ty = x1 + 10, y1 + 10
+        # テキストをエリア中央に大きく表示
         text = f"{pct:.1f}%"
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
         bbox = draw.textbbox((0, 0), text, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        draw.rectangle([tx-4, ty-4, tx+tw+8, ty+th+8], fill=(0,0,0,160), outline=(255,255,255,80))
-        draw.text((tx+2, ty+2), text, font=font, fill=(0,0,0,120))
-        draw.text((tx, ty), text, font=font, fill=(255,255,255,240))
+        tx = cx - tw // 2
+        ty = cy - th // 2
+        # 背景
+        pad = 16
+        draw.rectangle([tx-pad, ty-pad, tx+tw+pad, ty+th+pad], fill=(0,0,0,180))
+        # テキスト
+        draw.text((tx, ty), text, font=font, fill=(255,255,255,255))
 
     return output
 
