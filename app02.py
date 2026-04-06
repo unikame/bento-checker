@@ -256,22 +256,26 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
 
         draw.rectangle([x1, y1, x2, y2], outline=(*color, 255), width=line_w)
 
-        # テキストをエリア中央に大きく表示
+        # テキストをエリア中央に表示
         text = f"{pct:.1f}%"
         cx = (x1 + x2) // 2
         cy = (y1 + y2) // 2
+        # textbboxのオフセットを正確に考慮
         bbox = draw.textbbox((0, 0), text, font=font)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
-        tx = cx - tw // 2
-        ty = cy - th // 2
-        # 背景（テキストより大きめに）
-        pad = max(12, int(font_size * 0.4))
+        bx0, by0, bx1, by1 = bbox
+        tw = bx1 - bx0
+        th = by1 - by0
+        # 描画位置：中央に合わせてオフセット補正
+        tx = cx - tw // 2 - bx0
+        ty = cy - th // 2 - by0
+        # 背景
+        pad = max(14, int(font_size * 0.45))
         draw.rectangle(
-            [tx - pad, ty - pad, tx + tw + pad, ty + th + pad],
+            [cx - tw//2 - pad, cy - th//2 - pad,
+             cx + tw//2 + pad, cy + th//2 + pad],
             fill=(0, 0, 0, 200)
         )
-        # テキスト（背景の上に描画）
+        # テキスト
         draw.text((tx, ty), text, font=font, fill=(255, 255, 255, 255))
 
     return output
