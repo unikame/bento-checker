@@ -371,6 +371,9 @@ if st.session_state.selected_idx is not None and st.session_state.selected_idx <
         for part in detail_text.split(" / "):
             if ":" in part:
                 nm, pct_str = part.rsplit(":", 1)
+                # ご飯エリアは表示しない
+                if nm == "下左（ごはん）":
+                    continue
                 try:
                     pct = float(pct_str.replace("%", ""))
                     cls = "pass" if pct < 15 else ("warn" if pct < 30 else "fail")
