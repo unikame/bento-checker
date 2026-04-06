@@ -68,18 +68,22 @@ def pil_to_base64(img: Image.Image, fmt="JPEG") -> str:
 
 # --- Claude Vision による充填率判定 ---
 def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> dict:
-    prompt = f"""You are a bento quality inspector. Analyze this image of the "{area_name}" compartment.
+    prompt = f"""You are a strict bento quality inspector. Analyze this image of the "{area_name}" compartment.
 
-Carefully estimate what percentage of the compartment area is EMPTY (showing the red tray bottom with diamond pattern).
+Your task: estimate the EMPTY area percentage (where the red tray bottom with diamond pattern is visible).
 
-Rules:
-- Red tray bottom visible = empty space
-- Paper cups/dividers = ignore (they are containers)
-- Food inside cups = filled
-- Off-center food still leaves empty space elsewhere
+Step-by-step:
+1. Look at the ENTIRE compartment area
+2. Identify ALL regions where the red tray bottom is exposed — even small gaps between foods
+3. Also count areas where food is sparse or pushed to one side, leaving visible gaps
+4. Sum up all empty areas as a percentage of total compartment area
 
-Be precise and honest. Do NOT round to multiples of 5 or 10.
-Give your best estimate as an exact number (e.g. 7.3, 22.8, 41.5).
+Important:
+- A tamagoyaki (egg roll) placed on one side leaves gaps on the other side — count those gaps
+- Small gaps between food items ADD UP — don't ignore them
+- Paper cups are containers, not food — the space around/between cups counts as empty if tray is visible
+- Be STRICT: when in doubt, report MORE empty space rather than less
+- Do NOT round to multiples of 5 or 10 — give exact value (e.g. 7.3, 18.6, 33.2)
 
 Respond in JSON only, no other text:
 {{"emptiness_pct": number, "confidence": "high/medium/low", "reason": "reason in Japanese under 30 chars"}}"""
