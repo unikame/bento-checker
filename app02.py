@@ -68,31 +68,21 @@ def pil_to_base64(img: Image.Image, fmt="JPEG") -> str:
 
 # --- Claude Vision による充填率判定 ---
 def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> dict:
-    prompt = f"""あなたはお弁当の品質検査AIです。
-この画像は「{area_name}」エリアの写真です。
-画像をよく見て、空き率（トレーの赤い底面が見えている面積の割合）を正確に数値で答えてください。
+    prompt = f"""You are a bento quality inspector. Analyze this image of the "{area_name}" compartment.
 
-【判定ルール】
-- トレーの赤い底面・菱形模様が見えている → その面積が空き
-- カップや仕切り紙は容器なので無視する
-- カップの中に食材があれば埋まっているとみなす
-- 食材が偏っていても、空いている部分は空きとカウント
-- 見た目で感じる「スカスカ感」を正直に数値化すること
+Carefully estimate what percentage of the compartment area is EMPTY (showing the red tray bottom with diamond pattern).
 
-【よくある間違い】
-- 食材が少なくてもカップが大きいと埋まっているように見えるが、実際の食材量で判断すること
-- 隙間が少しでもあれば正直に加算すること
-- 迷ったら多めに（空きが多い方向に）評価すること
+Rules:
+- Red tray bottom visible = empty space
+- Paper cups/dividers = ignore (they are containers)
+- Food inside cups = filled
+- Off-center food still leaves empty space elsewhere
 
-【空き率の基準】
-- 0〜10%：食材がぎっしり詰まっている
-- 10〜20%：わずかに隙間がある
-- 20〜35%：隙間が目立つ、やや少ない
-- 35〜50%：明らかに少ない
-- 50%以上：かなりスカスカ
+Be precise and honest. Do NOT round to multiples of 5 or 10.
+Give your best estimate as an exact number (e.g. 7.3, 22.8, 41.5).
 
-返答形式（JSONのみ・他の文字は一切不要）:
-{{"emptiness_pct": 数値, "confidence": "high/medium/low", "reason": "具体的な理由を30字以内で"}}"""
+Respond in JSON only, no other text:
+{{"emptiness_pct": number, "confidence": "high/medium/low", "reason": "reason in Japanese under 30 chars"}}"""
 
     b64 = pil_to_base64(area_img)
     try:
