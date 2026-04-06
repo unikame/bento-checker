@@ -421,20 +421,28 @@ else:
         results = []
         total_areas = len(areas)
 
-        for i, (name, (y1, y2, x1, x2)) in enumerate(areas.items()):
-            progress_bar.progress(
-                20 + int(60 * i / total_areas),
-                text=f"Claude Vision で「{name}」を解析中... ({i+1}/{total_areas})"
-            )
-            roi = img_orig.crop((x1, y1, x2, y2))
-            analysis = analyze_area_with_claude(client, roi, name)
-            results.append({
-                "name": name,
-                "emptiness_pct": analysis["emptiness_pct"],
-                "confidence": analysis["confidence"],
-                "reason": analysis["reason"],
-            })
-
+for i, (name, (y1, y2, x1, x2)) in enumerate(areas.items()):
+    progress_bar.progress(
+        20 + int(60 * i / total_areas),
+        text=f"Claude Vision で「{name}」を解析中... ({i+1}/{total_areas})"
+    )
+    # ご飯エリアは計測対象外（常に埋まっている扱い）
+    if name == "下左（ごはん）":
+        results.append({
+            "name": name,
+            "emptiness_pct": 0.0,
+            "confidence": "high",
+            "reason": "計測対象外",
+        })
+        continue
+    roi = img_orig.crop((x1, y1, x2, y2))
+    analysis = analyze_area_with_claude(client, roi, name)
+    results.append({
+        "name": name,
+        "emptiness_pct": analysis["emptiness_pct"],
+        "confidence": analysis["confidence"],
+        "reason": analysis["reason"],
+    })
         progress_bar.progress(85, text="全体評価を生成中...")
         avg_pct = np.mean([r["emptiness_pct"] for r in results])
         is_pass = avg_pct < 20.0 and all(r["emptiness_pct"] < 30.0 for r in results)
