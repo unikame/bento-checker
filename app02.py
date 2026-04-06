@@ -102,6 +102,7 @@ Respond in JSON only, no other text:
             }]
         )
         raw = msg.content[0].text.strip()
+        print(f"[DEBUG] {area_name}: {raw}")  # Streamlit Cloudログに出力
         start = raw.find("{")
         end = raw.rfind("}") + 1
         data = json.loads(raw[start:end])
@@ -111,6 +112,7 @@ Respond in JSON only, no other text:
             "reason": data.get("reason", "")
         }
     except Exception as e:
+        print(f"[DEBUG ERROR] {area_name}: {e}")
         return {"emptiness_pct": 50.0, "confidence": "low", "reason": f"解析エラー: {e}"}
 
 
