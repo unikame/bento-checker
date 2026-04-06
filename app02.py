@@ -261,14 +261,18 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
         cx = (x1 + x2) // 2
         cy = (y1 + y2) // 2
         bbox = draw.textbbox((0, 0), text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        tw = bbox[2] - bbox[0]
+        th = bbox[3] - bbox[1]
         tx = cx - tw // 2
         ty = cy - th // 2
-        # 背景
-        pad = 16
-        draw.rectangle([tx-pad, ty-pad, tx+tw+pad, ty+th+pad], fill=(0,0,0,180))
-        # テキスト
-        draw.text((tx, ty), text, font=font, fill=(255,255,255,255))
+        # 背景（テキストより大きめに）
+        pad = max(12, int(font_size * 0.4))
+        draw.rectangle(
+            [tx - pad, ty - pad, tx + tw + pad, ty + th + pad],
+            fill=(0, 0, 0, 200)
+        )
+        # テキスト（背景の上に描画）
+        draw.text((tx, ty), text, font=font, fill=(255, 255, 255, 255))
 
     return output
 
