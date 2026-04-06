@@ -52,8 +52,9 @@ div[data-testid="stFileUploader"] { background: white; border: 2px dashed #d0ccc
 # --- Anthropic クライアント ---
 @st.cache_resource
 def get_anthropic_client():
-    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
+    try:
+        api_key = st.secrets["ANTHROPIC_API_KEY"]
+    except Exception:
         st.error("ANTHROPIC_API_KEY が設定されていません。")
         st.stop()
     return anthropic.Anthropic(api_key=api_key)
@@ -137,17 +138,10 @@ def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
         return f"総評の生成に失敗しました: {e}"
 
 
-# --- トレー検出・射影変換 ---
 # --- エリア分割ロジック（食材エリア直接検出）---
 def detect_bento_areas(img_bgr: np.ndarray):
-    """
-    トレーの赤い仕切りで囲まれた食材エリアを直接検出。
-    戻り値: areas（矩形座標 y1,y2,x1,x2）
-    失敗時は固定比率フォールバック。
-    """
     h, w = img_bgr.shape[:2]
 
-    # トレー色マスク（暗めの赤茶色）
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     tray1 = cv2.inRange(hsv, np.array([0,  120, 60]),  np.array([10, 255, 160]))
     tray2 = cv2.inRange(hsv, np.array([170,120, 60]),  np.array([180,255, 160]))
@@ -156,14 +150,11 @@ def detect_bento_areas(img_bgr: np.ndarray):
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_CLOSE, kernel)
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_OPEN, kernel)
 
-    # トレー全体を塗りつぶし
     contours, _ = cv2.findContours(tray_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         contours = sorted(contours, key=cv2.contourArea, reverse=True)
         filled = np.zeros_like(tray_mask)
         cv2.drawContours(filled, [contours[0]], -1, 255, -1)
-
-        # 食材エリア = トレー内側の非赤部分
         food_mask = cv2.bitwise_and(filled, cv2.bitwise_not(tray_mask))
         food_contours, _ = cv2.findContours(food_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         min_area = h * w * 0.03
@@ -182,17 +173,15 @@ def detect_bento_areas(img_bgr: np.ndarray):
 
             if len(top) == 2 and len(bot) == 2:
                 tl, tr, bl, br = top[0], top[1], bot[0], bot[1]
-                # 上右の右端を下右の右端に揃える
                 tr_x2 = br['x2']
-                areas = {
+                return {
                     "上左（小おかず）": (tl['y1'], tl['y2'], tl['x1'], tl['x2']),
                     "上右（大おかず）": (tr['y1'], tr['y2'], tr['x1'], tr_x2),
                     "下左（ごはん）":   (bl['y1'], bl['y2'], bl['x1'], bl['x2']),
                     "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
                 }
-                return areas
 
-    # フォールバック: 固定比率
+    # フォールバック
     y1          = int(h * 0.10)
     h_split     = int(h * 0.46)
     x1_top      = int(w * 0.10)
@@ -214,7 +203,6 @@ def detect_bento_areas(img_bgr: np.ndarray):
 def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> Image.Image:
     output = img_pil.copy()
     result_map = {r["name"]: r for r in results}
-
     w, _ = output.size
     font_size = max(20, int(w * 0.035))
     font_paths = [
@@ -235,7 +223,11 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
         r = result_map.get(name, {})
         pct = r.get("emptiness_pct", 0)
 
-        if pct < 15:
+        # ご飯エリアは計測対象外として表示
+        if name == "下左（ごはん）":
+            color = (150, 150, 150)
+            alpha = 20
+        elif pct < 15:
             color = (46, 204, 113)
             alpha = 30
         elif pct < 30:
@@ -255,7 +247,7 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
         draw.rectangle([x1, y1, x2, y2], outline=(*color, 230), width=line_w)
 
         tx, ty = x1 + 10, y1 + 10
-        text = f"{pct:.1f}%"
+        text = "対象外" if name == "下左（ごはん）" else f"{pct:.1f}%"
         bbox = draw.textbbox((0, 0), text, font=font)
         tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
         draw.rectangle([tx-4, ty-4, tx+tw+8, ty+th+8], fill=(0,0,0,160), outline=(255,255,255,80))
@@ -274,11 +266,9 @@ def load_shared_history():
             return []
     return []
 
-
 def save_history(record: dict):
     df = pd.DataFrame([record])
     df.to_csv(DB_FILE, mode='a', header=not os.path.exists(DB_FILE), index=False)
-
 
 def delete_history_item(idx: int) -> bool:
     history = load_shared_history()
@@ -415,39 +405,42 @@ else:
         img_orig = Image.open(up).convert("RGB")
         img_bgr  = cv2.cvtColor(np.array(img_orig), cv2.COLOR_RGB2BGR)
 
-        progress_bar.progress(10, text="トレーを検出・補正中...")
+        progress_bar.progress(10, text="トレーを検出中...")
         areas = detect_bento_areas(img_bgr)
 
         results = []
         total_areas = len(areas)
 
-for i, (name, (y1, y2, x1, x2)) in enumerate(areas.items()):
-    progress_bar.progress(
-        20 + int(60 * i / total_areas),
-        text=f"Claude Vision で「{name}」を解析中... ({i+1}/{total_areas})"
-    )
-    # ご飯エリアは計測対象外（常に埋まっている扱い）
-    if name == "下左（ごはん）":
-        results.append({
-            "name": name,
-            "emptiness_pct": 0.0,
-            "confidence": "high",
-            "reason": "計測対象外",
-        })
-        continue
-    roi = img_orig.crop((x1, y1, x2, y2))
-    analysis = analyze_area_with_claude(client, roi, name)
-    results.append({
-        "name": name,
-        "emptiness_pct": analysis["emptiness_pct"],
-        "confidence": analysis["confidence"],
-        "reason": analysis["reason"],
-    })
-        progress_bar.progress(85, text="全体評価を生成中...")
-        avg_pct = np.mean([r["emptiness_pct"] for r in results])
-        is_pass = avg_pct < 20.0 and all(r["emptiness_pct"] < 30.0 for r in results)
+        for i, (name, (y1, y2, x1, x2)) in enumerate(areas.items()):
+            progress_bar.progress(
+                20 + int(60 * i / total_areas),
+                text=f"Claude Vision で「{name}」を解析中... ({i+1}/{total_areas})"
+            )
+            # ご飯エリアは計測対象外
+            if name == "下左（ごはん）":
+                results.append({
+                    "name": name,
+                    "emptiness_pct": 0.0,
+                    "confidence": "high",
+                    "reason": "計測対象外",
+                })
+                continue
+            roi = img_orig.crop((x1, y1, x2, y2))
+            analysis = analyze_area_with_claude(client, roi, name)
+            results.append({
+                "name": name,
+                "emptiness_pct": analysis["emptiness_pct"],
+                "confidence": analysis["confidence"],
+                "reason": analysis["reason"],
+            })
 
-        ai_comment = analyze_overall_with_claude(client, img_orig, results)
+        progress_bar.progress(85, text="全体評価を生成中...")
+        # 平均・PASS判定はご飯除外
+        target_results = [r for r in results if r["name"] != "下左（ごはん）"]
+        avg_pct = np.mean([r["emptiness_pct"] for r in target_results]) if target_results else 0.0
+        is_pass = avg_pct < 20.0 and all(r["emptiness_pct"] < 30.0 for r in target_results)
+
+        ai_comment = analyze_overall_with_claude(client, img_orig, target_results)
 
         progress_bar.progress(92, text="結果を描画中...")
         output_pil = draw_results_on_image(img_orig, areas, results)
@@ -479,7 +472,7 @@ for i, (name, (y1, y2, x1, x2)) in enumerate(areas.items()):
                 お弁当の写真をアップロードすると<br>
                 Claude Vision AI が各エリアの充填率を解析します<br><br>
                 <span style="font-size:0.75rem; color:#ccc;">
-                ✓ 斜め補正対応 &nbsp;|&nbsp; ✓ AI視覚判定 &nbsp;|&nbsp; ✓ 高精度解析
+                ✓ エリア自動検出 &nbsp;|&nbsp; ✓ AI視覚判定 &nbsp;|&nbsp; ✓ 高精度解析
                 </span>
             </div>
         </div>
