@@ -220,14 +220,14 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
             break
 
     for name, (y1, y2, x1, x2) in areas.items():
+        # ご飯エリアは枠・数値とも非表示
+        if name == "下左（ごはん）":
+            continue
+
         r = result_map.get(name, {})
         pct = r.get("emptiness_pct", 0)
 
-        # ご飯エリアは計測対象外として表示
-        if name == "下左（ごはん）":
-            color = (150, 150, 150)
-            alpha = 20
-        elif pct < 15:
+        if pct < 15:
             color = (46, 204, 113)
             alpha = 30
         elif pct < 30:
