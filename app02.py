@@ -199,9 +199,8 @@ def detect_bento_areas(img_bgr: np.ndarray):
 
 
 def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> Image.Image:
-    output = img_pil.copy()
     result_map = {r["name"]: r for r in results}
-    w, _ = output.size
+    w, h = img_pil.size
     font_size = max(20, int(w * 0.035))
     font_paths = [
         "/System/Library/Fonts/Helvetica.ttc",
@@ -217,31 +216,40 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
                 pass
             break
 
+    # 半透明オーバーレイを一括で作成
+    output = img_pil.convert('RGBA')
+    overlay = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+    ov_draw = ImageDraw.Draw(overlay)
+
     for name, (y1, y2, x1, x2) in areas.items():
-        # ご飯エリアは枠・数値とも非表示
         if name == "下左（ごはん）":
             continue
-
         r = result_map.get(name, {})
         pct = r.get("emptiness_pct", 0)
+        if pct < 15:
+            color = (46, 204, 113); alpha = 40
+        elif pct < 30:
+            color = (243, 156, 18); alpha = 50
+        else:
+            color = (231, 76, 60); alpha = 60
+        ov_draw.rectangle([x1, y1, x2, y2], fill=(*color, alpha))
 
+    output = Image.alpha_composite(output, overlay).convert('RGB')
+    draw = ImageDraw.Draw(output, 'RGBA')
+
+    line_w = max(3, int(w * 0.004))
+    for name, (y1, y2, x1, x2) in areas.items():
+        if name == "下左（ごはん）":
+            continue
+        r = result_map.get(name, {})
+        pct = r.get("emptiness_pct", 0)
         if pct < 15:
             color = (46, 204, 113)
-            alpha = 30
         elif pct < 30:
             color = (243, 156, 18)
-            alpha = 40
         else:
             color = (231, 76, 60)
-            alpha = 50
 
-        overlay = Image.new('RGBA', output.size, (0, 0, 0, 0))
-        ov_draw = ImageDraw.Draw(overlay)
-        ov_draw.rectangle([x1, y1, x2, y2], fill=(*color, alpha))
-        output = Image.alpha_composite(output.convert('RGBA'), overlay).convert('RGB')
-        draw = ImageDraw.Draw(output, 'RGBA')
-
-        line_w = max(3, int(w * 0.004))
         draw.rectangle([x1, y1, x2, y2], outline=(*color, 230), width=line_w)
 
         tx, ty = x1 + 10, y1 + 10
