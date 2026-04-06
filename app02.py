@@ -177,7 +177,6 @@ def detect_bento_areas(img_bgr: np.ndarray):
                 return {
                     "上左（小おかず）": (tl['y1'], tl['y2'], tl['x1'], tl['x2']),
                     "上右（大おかず）": (tr['y1'], tr['y2'], tr['x1'], tr_x2),
-                    "下左（ごはん）":   (bl['y1'], bl['y2'], bl['x1'], bl['x2']),
                     "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
                 }
 
@@ -195,7 +194,6 @@ def detect_bento_areas(img_bgr: np.ndarray):
     return {
         "上左（小おかず）": (y1,          h_split,     x1_top, v_top),
         "上右（大おかず）": (y1,          h_split,     v_top,  x2_top),
-        "下左（ごはん）":   (h_split_bot, y2,          x1_bot, v_bot),
         "下右（小おかず）": (h_split_bot, y2,          v_bot,  x2_bot),
     }
 
