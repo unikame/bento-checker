@@ -103,7 +103,6 @@ Respond in JSON only, no other text:
             }]
         )
         raw = msg.content[0].text.strip()
-        st.write(f"🔍 [{area_name}] APIレスポンス: {raw}")  # 画面にデバッグ表示
         start = raw.find("{")
         end = raw.rfind("}") + 1
         data = json.loads(raw[start:end])
@@ -113,7 +112,6 @@ Respond in JSON only, no other text:
             "reason": data.get("reason", "")
         }
     except Exception as e:
-        st.error(f"❌ [{area_name}] エラー: {e}")
         return {"emptiness_pct": 50.0, "confidence": "low", "reason": f"解析エラー: {e}"}
 
 
@@ -490,9 +488,7 @@ else:
         progress_bar.progress(100, text="完了！")
         st.session_state.last_processed_file = up.name
         st.session_state.selected_idx = len(load_shared_history()) - 1
-        # デバッグ中: st.rerun() を停止してAPIレスポンスを確認
-        st.success("✅ スキャン完了 - 上のデバッグ表示を確認してください")
-        # st.rerun()
+        st.rerun()
 
     elif not up:
         st.markdown("""
