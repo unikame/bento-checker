@@ -91,7 +91,7 @@ Respond in JSON only, no other text:
     b64 = pil_to_base64(area_img)
     try:
         msg = client.messages.create(
-            model="claude-opus-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=256,
             messages=[{
                 "role": "user",
@@ -102,7 +102,7 @@ Respond in JSON only, no other text:
             }]
         )
         raw = msg.content[0].text.strip()
-        print(f"[DEBUG] {area_name}: {raw}")  # Streamlit Cloudログに出力
+        st.write(f"🔍 [{area_name}] APIレスポンス: {raw}")  # 画面にデバッグ表示
         start = raw.find("{")
         end = raw.rfind("}") + 1
         data = json.loads(raw[start:end])
@@ -112,7 +112,7 @@ Respond in JSON only, no other text:
             "reason": data.get("reason", "")
         }
     except Exception as e:
-        print(f"[DEBUG ERROR] {area_name}: {e}")
+        st.error(f"❌ [{area_name}] エラー: {e}")
         return {"emptiness_pct": 50.0, "confidence": "low", "reason": f"解析エラー: {e}"}
 
 
@@ -125,7 +125,7 @@ def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
     b64 = pil_to_base64(img)
     try:
         msg = client.messages.create(
-            model="claude-opus-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=300,
             messages=[{
                 "role": "user",
