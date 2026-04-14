@@ -76,52 +76,47 @@ BASE_IMAGES = {
 # --- Claude Vision による充填率判定 ---
 def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> dict:
     b64 = pil_to_base64(area_img)
-    base_b64 = BASE_IMAGES.get(area_name)
 
-    prompt = f"""You are a bento quality inspector.
+    prompt = f"""You are a bento quality inspector analyzing the "{area_name}" compartment.
 
-I will show you TWO images of the "{area_name}" compartment:
-- Image 1 (REFERENCE): A perfect bento — 0% empty
-- Image 2 (TARGET): The bento to evaluate
+Calculate the EMPTY percentage of this compartment using these STRICT rules:
 
-Compare Image 2 against Image 1 and estimate the emptiness percentage.
+EMPTY = container bottom (red tray with diamond pattern) is CLEARLY VISIBLE with NO food covering it.
 
-Emptiness rules (STRICT):
-- Count as EMPTY only: areas where the container bottom or walls are CLEARLY visible with NO food on top
-- Count as FILLED: any area covered by food — even beans, thin slices, small pieces, transparent/translucent items (e.g. pickles), or lightly placed ingredients
-- Do NOT count: tiny gaps between food items, spaces between cups/dividers, cup rims or edges
-- A compartment covered with food (even loosely) = low emptiness
-- Only large clearly bare container areas = high emptiness
+FILLED = any of the following covers the area:
+- Any food item regardless of size (beans, small pieces, thin slices)
+- Transparent or semi-transparent food (pickles, jellied items, clear sauces)
+- Food containers/cups (paper cups, dividers) — treat as FILLED, do NOT count as empty
+- Loosely placed or scattered food
 
-Scoring guide vs Reference:
-- Same fullness as reference → 0 to 5%
-- Slightly less food, small bare spots → 5 to 12%
-- Noticeably less food, some bare areas → 12 to 25%
-- Clearly sparse, large bare container visible → 25%+
+Do NOT count as empty:
+- Tiny gaps between individual food items
+- Spaces between cups or dividers (structural)
+- Cup rims or edges
+- Any area where food EXISTS, even if sparse
 
-Do NOT round to multiples of 5. Give exact value (e.g. 3.2, 8.7, 17.4)
+Only count as empty:
+- Large clearly BARE areas where the red container bottom is directly visible
+- Areas with absolutely no food coverage whatsoever
 
-Respond in JSON only:
-{{"emptiness_pct": number, "confidence": "high/medium/low", "reason": "比較理由を30字以内で"}}"""
+emptiness_pct = (area of clearly bare container bottom) / (total compartment area) × 100
+
+Be conservative — when in doubt, count as FILLED not empty.
+Give exact value, do NOT round to multiples of 5 (e.g. 3.2, 8.7, 17.4)
+
+Respond in JSON only, no other text:
+{{"emptiness_pct": number, "confidence": "high/medium/low", "reason": "理由を30字以内で"}}"""
 
     try:
-        content_parts = []
-        if base_b64:
-            content_parts += [
-                {"type": "text", "text": "Image 1 (REFERENCE - perfect bento, 0% empty):"},
-                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": base_b64}},
-                {"type": "text", "text": "Image 2 (TARGET - bento to evaluate):"},
-            ]
-        content_parts += [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-            {"type": "text", "text": prompt},
-        ]
         msg = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=256,
             messages=[{
                 "role": "user",
-                "content": content_parts
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+                    {"type": "text", "text": prompt},
+                ]
             }]
         )
         raw = msg.content[0].text.strip()
