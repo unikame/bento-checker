@@ -490,7 +490,9 @@ else:
         progress_bar.progress(100, text="完了！")
         st.session_state.last_processed_file = up.name
         st.session_state.selected_idx = len(load_shared_history()) - 1
-        st.rerun()
+        # デバッグ中: st.rerun() を停止してAPIレスポンスを確認
+        st.success("✅ スキャン完了 - 上のデバッグ表示を確認してください")
+        # st.rerun()
 
     elif not up:
         st.markdown("""
