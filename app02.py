@@ -79,32 +79,26 @@ def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> d
 
     prompt = f"""You are a bento quality inspector analyzing the "{area_name}" compartment.
 
-Calculate the EMPTY percentage of this compartment using these STRICT rules:
+Calculate the EMPTY percentage using these rules:
 
-EMPTY = container bottom (red tray with diamond pattern) is CLEARLY VISIBLE with NO food covering it.
+EMPTY (count these):
+- Areas where the red tray bottom (diamond pattern) is DIRECTLY VISIBLE with NO food on top
+- This includes: bare areas next to egg rolls (tamagoyaki), gaps where food was not placed, any clearly uncovered tray surface
+- Even if the bare area is on one side of the compartment, count its area as a percentage of the whole
 
-FILLED = any of the following covers the area:
-- Any food item regardless of size (beans, small pieces, thin slices)
-- Transparent or semi-transparent food (pickles, jellied items, clear sauces)
-- Food containers/cups (paper cups, dividers) — treat as FILLED, do NOT count as empty
-- Loosely placed or scattered food
+FILLED (do NOT count as empty):
+- Any food item: beans, small pieces, thin slices, scattered food
+- Transparent/semi-transparent food (pickles, jellied items)
+- Paper cups and dividers themselves
+- Tiny gaps BETWEEN food items (not between food and tray)
 
-Do NOT count as empty:
-- Tiny gaps between individual food items
-- Spaces between cups or dividers (structural)
-- Cup rims or edges
-- Any area where food EXISTS, even if sparse
+KEY RULE: If you can see the RED TRAY BOTTOM in a contiguous area (even beside a tamagoyaki or at the edge), that area IS empty. Do not ignore it.
 
-Only count as empty:
-- Large clearly BARE areas where the red container bottom is directly visible
-- Areas with absolutely no food coverage whatsoever
+emptiness_pct = (total visible bare tray area) / (total compartment area) × 100
 
-emptiness_pct = (area of clearly bare container bottom) / (total compartment area) × 100
-
-Be conservative — when in doubt, count as FILLED not empty.
 Give exact value, do NOT round to multiples of 5 (e.g. 3.2, 8.7, 17.4)
 
-Respond in JSON only, no other text:
+Respond in JSON only:
 {{"emptiness_pct": number, "confidence": "high/medium/low", "reason": "理由を30字以内で"}}"""
 
     try:
