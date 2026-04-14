@@ -81,18 +81,25 @@ def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> d
     prompt = f"""You are a bento quality inspector.
 
 I will show you TWO images of the "{area_name}" compartment:
-- Image 1 (REFERENCE): A perfect bento with 0% emptiness — food fills the compartment completely
+- Image 1 (REFERENCE): A perfect bento — 0% empty
 - Image 2 (TARGET): The bento to evaluate
 
-Compare Image 2 against Image 1 and estimate how much MORE empty space Image 2 has compared to Image 1.
+Compare Image 2 against Image 1 and estimate the emptiness percentage.
 
-Rules:
-- If Image 2 looks as full as Image 1 → emptiness_pct = 0 to 5
-- If Image 2 has slightly less food → emptiness_pct = 5 to 15
-- If Image 2 has noticeably less food → emptiness_pct = 15 to 30
-- If Image 2 has significantly less food → emptiness_pct = 30+
-- Do NOT count gaps between cups/dividers as empty (structural gaps)
-- Do NOT round to multiples of 5 — give exact value (e.g. 3.2, 11.7, 24.8)
+Emptiness rules (STRICT):
+- Count as EMPTY only: areas where the container bottom or walls are CLEARLY visible with NO food on top
+- Count as FILLED: any area covered by food — even beans, thin slices, small pieces, transparent/translucent items (e.g. pickles), or lightly placed ingredients
+- Do NOT count: tiny gaps between food items, spaces between cups/dividers, cup rims or edges
+- A compartment covered with food (even loosely) = low emptiness
+- Only large clearly bare container areas = high emptiness
+
+Scoring guide vs Reference:
+- Same fullness as reference → 0 to 5%
+- Slightly less food, small bare spots → 5 to 12%
+- Noticeably less food, some bare areas → 12 to 25%
+- Clearly sparse, large bare container visible → 25%+
+
+Do NOT round to multiples of 5. Give exact value (e.g. 3.2, 8.7, 17.4)
 
 Respond in JSON only:
 {{"emptiness_pct": number, "confidence": "high/medium/low", "reason": "比較理由を30字以内で"}}"""
