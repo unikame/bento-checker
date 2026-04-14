@@ -70,20 +70,21 @@ def pil_to_base64(img: Image.Image, fmt="JPEG") -> str:
 def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> dict:
     prompt = f"""You are a strict bento quality inspector. Analyze this image of the "{area_name}" compartment.
 
-Your task: estimate the EMPTY area percentage (where the red tray bottom with diamond pattern is visible).
+Your task: estimate the EMPTY area percentage where food is MISSING or INSUFFICIENT.
 
-Step-by-step:
-1. Look at the ENTIRE compartment area
-2. Identify ALL regions where the red tray bottom is exposed — even small gaps between foods
-3. Also count areas where food is sparse or pushed to one side, leaving visible gaps
-4. Sum up all empty areas as a percentage of total compartment area
+Definition of EMPTY:
+- Red tray bottom (diamond pattern) visible in areas where food SHOULD be placed = empty
+- Food pushed to one side, leaving a large gap on the other side = count the gap
+- Sparse/thin layer of food that doesn't fill the compartment = count proportionally
 
-Important:
-- A tamagoyaki (egg roll) placed on one side leaves gaps on the other side — count those gaps
-- Small gaps between food items ADD UP — don't ignore them
-- Paper cups are containers, not food — the space around/between cups counts as empty if tray is visible
-- Be STRICT: when in doubt, report MORE empty space rather than less
-- Do NOT round to multiples of 5 or 10 — give exact value (e.g. 7.3, 18.6, 33.2)
+Definition of NOT EMPTY (do NOT count as empty):
+- Small gaps between paper cups or dividers (these are structural, not missing food)
+- Space between individual cup containers (the cups themselves define the portion areas)
+- The edges/rims of cups or dividers
+
+Focus on: is there enough FOOD to fill this compartment appropriately?
+
+Be precise. Do NOT round to multiples of 5 or 10 — give exact value (e.g. 7.3, 18.6, 33.2)
 
 Respond in JSON only, no other text:
 {{"emptiness_pct": number, "confidence": "high/medium/low", "reason": "reason in Japanese under 30 chars"}}"""
