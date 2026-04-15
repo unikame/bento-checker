@@ -118,10 +118,13 @@ Respond in JSON only:
         start = raw.find("{")
         end = raw.rfind("}") + 1
         data = json.loads(raw[start:end])
+        reason = data.get("reason", "")
+        pct = float(data.get("emptiness_pct", 50))
+        print(f"[RESULT] {area_name}: {pct}% - {reason}")
         return {
-            "emptiness_pct": float(data.get("emptiness_pct", 50)),
+            "emptiness_pct": pct,
             "confidence": data.get("confidence", "medium"),
-            "reason": data.get("reason", "")
+            "reason": reason
         }
     except Exception as e:
         import traceback
