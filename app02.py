@@ -205,7 +205,7 @@ def detect_bento_areas(img_bgr: np.ndarray):
                     "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
                 }
 
-        # 3エリア検出：上右が検出されていない場合→補完
+        # 3エリア検出：欠けているエリアを補完
         if len(food_contours) == 3:
             boxes = []
             for c in food_contours:
@@ -217,26 +217,44 @@ def detect_bento_areas(img_bgr: np.ndarray):
             rice = max(boxes, key=lambda b: b['area'])
             rest = [b for b in boxes if b != rice]
 
-            upper = [b for b in rest if b['cy'] < h * 0.5]
-            lower = [b for b in rest if b['cy'] >= h * 0.5]
+            # x・y座標で分類
+            tl = tr = br = None
+            for b in rest:
+                cx_r = b['cx'] / w
+                cy_r = b['cy'] / h
+                if cy_r < 0.5 and cx_r < 0.5:
+                    tl = b  # 上左
+                elif cy_r < 0.5:
+                    tr = b  # 上右
+                else:
+                    br = b  # 下右
 
-            if len(upper) == 1 and len(lower) == 1:
-                tl = upper[0]
-                br = lower[0]
-                # 上右は上左のx2から下右のx2まで、yは上左と同じ
-                return {
-                    "上左（小おかず）": (tl['y1'], tl['y2'], tl['x1'], tl['x2']),
-                    "上右（大おかず）": (tl['y1'], tl['y2'], tl['x2'], br['x2']),
-                    "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
-                }
-            elif len(upper) == 2 and len(lower) == 0:
-                top = sorted(upper, key=lambda b: b['cx'])
-                tl, tr = top[0], top[1]
-                br = rice  # ごはんから下右を推定
+            # ごはんの位置を参考に上段y範囲・右端を補完
+            rice_x2 = rice['x2']
+            top_y1 = (tl or tr)['y1'] if (tl or tr) else int(h * 0.06)
+            top_y2 = (tl or tr)['y2'] if (tl or tr) else int(h * 0.46)
+            bot_y1 = rice['y1']
+            bot_y2 = rice['y2']
+
+            # 上左が未検出→上右のx1より左を上左として補完
+            if tl is None and tr is not None:
+                tl = {'y1': top_y1, 'y2': top_y2, 'x1': rice['x1'], 'x2': tr['x1']}
+
+            # 下右が未検出→ごはんのx2より右を下右として補完
+            if br is None:
+                br_x1 = rice['x2']
+                br_x2 = (tr or tl)['x2'] if (tr or tl) else int(w * 0.90)
+                br = {'y1': bot_y1, 'y2': bot_y2, 'x1': br_x1, 'x2': br_x2}
+
+            # 上右が未検出→上左のx2から右端まで
+            if tr is None and tl is not None:
+                tr = {'y1': top_y1, 'y2': top_y2, 'x1': tl['x2'], 'x2': br['x2']}
+
+            if tl and tr and br:
                 return {
                     "上左（小おかず）": (tl['y1'], tl['y2'], tl['x1'], tl['x2']),
                     "上右（大おかず）": (tr['y1'], tr['y2'], tr['x1'], br['x2']),
-                    "下右（小おかず）": (br['y1'], br['y2'], int(br['x2']), int(br['x2'] + (br['x2']-br['x1'])*0.4)),
+                    "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
                 }
 
     # フォールバック（固定比率）
