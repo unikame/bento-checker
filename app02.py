@@ -71,41 +71,32 @@ def pil_to_base64(img: Image.Image, fmt="JPEG") -> str:
 def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> dict:
     b64 = pil_to_base64(area_img)
 
-    prompt = f"""You are a bento quality inspector analyzing the "{area_name}" compartment.
+    prompt = f"""お弁当の品質検査をしてください。画像は「{area_name}」エリアです。
 
-The tray is dark reddish-brown with a diamond/grid embossed pattern.
+このエリアの「空き率」を計算してください。
 
-Your task: calculate what percentage of this compartment has NO food and NO cups on it.
+空き率の定義：
+- 空き = トレーの赤茶色の底面（菱形模様）が直接見えている部分
+- 埋まり = 食材・カップ・仕切り紙で覆われている部分
 
-EMPTY (count as empty):
-- Areas where the bare reddish-brown tray bottom is directly visible
-- Includes: space next to egg roll (tamagoyaki), gaps where food was not placed
+判定ルール：
+1. 食材（野菜・肉・卵・漬物・豆など）がある → 埋まり
+2. カップ（紙カップ）がある → カップ自体もその周囲も埋まり
+3. 卵焼きが右側にあって左側にトレー底面が見える → 左側は空き
+4. 食材間の小さな隙間 → 埋まりとしてカウント（空きにしない）
+5. トレー底面が広く露出している → 空き
 
-FILLED (do NOT count as empty):
-- Any food: vegetables, meat, egg roll, fried food, pickles, beans, etc.
-- Paper cups themselves (the cup container)
-- The INTERIOR of a cup (even if you can see the cup rim/edge, the inside is filled)
-- Dividers and paper liners
+空き率 = 空きの面積 ÷ エリア全体の面積 × 100
 
-IMPORTANT DISTINCTION:
-- Cup RIM or EDGE visible = that cup area is FILLED
-- Bare tray NEXT TO a cup with no food = that specific area is EMPTY
-- Space between cup and tray wall where tray is exposed = EMPTY
+小数点1桁で回答してください（例：3.2、8.7、17.4）。5の倍数に丸めないでください。
 
-Example: If egg roll (tamagoyaki) is placed on the right side, the left side showing bare tray = EMPTY for that left portion.
-
-emptiness_pct = (bare tray area) / (total compartment area) × 100
-
-Give exact decimal (e.g. 3.2, 8.7, 17.4). Do NOT round to multiples of 5.
-
-Respond in JSON only:
-{{"emptiness_pct": number, "confidence": "high/medium/low", "reason": "理由を30字以内で"}}"""
+JSON形式のみで回答：
+{{"emptiness_pct": 数値, "confidence": "high/medium/low", "reason": "判断理由を20字以内"}}"""
 
     try:
         msg = client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=256,
-            temperature=0,
             messages=[{
                 "role": "user",
                 "content": [
