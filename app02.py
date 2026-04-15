@@ -251,10 +251,11 @@ def detect_bento_areas(img_bgr: np.ndarray):
                 tr = {'y1': top_y1, 'y2': top_y2, 'x1': tl['x2'], 'x2': br['x2']}
 
             if tl and tr and br:
+                def safe(v): return int(v) if v is not None else 0
                 return {
-                    "上左（小おかず）": (tl['y1'], tl['y2'], tl['x1'], tl['x2']),
-                    "上右（大おかず）": (tr['y1'], tr['y2'], tr['x1'], br['x2']),
-                    "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
+                    "上左（小おかず）": (safe(tl['y1']), safe(tl['y2']), safe(tl['x1']), safe(tl['x2'])),
+                    "上右（大おかず）": (safe(tr['y1']), safe(tr['y2']), safe(tr['x1']), safe(br['x2'])),
+                    "下右（小おかず）": (safe(br['y1']), safe(br['y2']), safe(br['x1']), safe(br['x2'])),
                 }
 
     # フォールバック（固定比率）
@@ -527,7 +528,13 @@ else:
                     "reason": "計測対象外",
                 })
                 continue
-            roi = img_orig.crop((x1, y1, x2, y2))
+            # 座標バリデーション
+            img_w, img_h = img_orig.size
+            x1c = max(0, min(int(x1), img_w-1))
+            y1c = max(0, min(int(y1), img_h-1))
+            x2c = max(x1c+1, min(int(x2), img_w))
+            y2c = max(y1c+1, min(int(y2), img_h))
+            roi = img_orig.crop((x1c, y1c, x2c, y2c))
             analysis = analyze_area_with_claude(client, roi, name)
             results.append({
                 "name": name,
