@@ -306,6 +306,10 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
     for name, (y1, y2, x1, x2) in areas.items():
         if name == "下左（ごはん）":
             continue
+        # 座標バリデーション
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = max(x1+1, min(x2, w)), max(y1+1, min(y2, h))
         r = result_map.get(name, {})
         pct = r.get("emptiness_pct", 0)
         if pct < 15:
