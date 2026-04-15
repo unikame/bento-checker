@@ -73,26 +73,30 @@ def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> d
 
     prompt = f"""You are a bento quality inspector analyzing the "{area_name}" compartment.
 
-The tray is dark reddish-brown (like mahogany) with a diamond/grid embossed pattern.
+The tray is dark reddish-brown with a diamond/grid embossed pattern.
 
-STEP 1: Identify the tray bottom color and pattern in this image.
-STEP 2: Find areas where the tray bottom is directly visible with NO food or cup covering it.
-STEP 3: Calculate what percentage of the total compartment area those bare tray areas represent.
+Your task: calculate what percentage of this compartment has NO food and NO cups on it.
 
-EMPTY = bare tray surface with absolutely nothing on it
-FILLED = any of the following:
-- Food items (beans, vegetables, meat, egg, pickles, etc.)
-- Paper cups — AND the tray area surrounding/beneath each cup is also FILLED
-  (if a cup exists in the compartment, treat the entire zone around it as filled)
-- Dividers, paper liners
-- Transparent or semi-transparent food (pickles, jellied items)
+EMPTY (count as empty):
+- Areas where the bare reddish-brown tray bottom is directly visible
+- Includes: space next to egg roll (tamagoyaki), gaps where food was not placed
 
-KEY RULE: If you see paper cups in the image, the tray area around those cups is NOT empty — count it as filled.
-Only count as EMPTY: large bare tray areas where there are clearly NO cups and NO food at all.
+FILLED (do NOT count as empty):
+- Any food: vegetables, meat, egg roll, fried food, pickles, beans, etc.
+- Paper cups themselves (the cup container)
+- The INTERIOR of a cup (even if you can see the cup rim/edge, the inside is filled)
+- Dividers and paper liners
 
-emptiness_pct = (truly bare tray area with no food and no cups nearby) / (total compartment area) × 100
+IMPORTANT DISTINCTION:
+- Cup RIM or EDGE visible = that cup area is FILLED
+- Bare tray NEXT TO a cup with no food = that specific area is EMPTY
+- Space between cup and tray wall where tray is exposed = EMPTY
 
-Give exact decimal value (e.g. 3.2, 8.7, 17.4). Do NOT round to multiples of 5.
+Example: If egg roll (tamagoyaki) is placed on the right side, the left side showing bare tray = EMPTY for that left portion.
+
+emptiness_pct = (bare tray area) / (total compartment area) × 100
+
+Give exact decimal (e.g. 3.2, 8.7, 17.4). Do NOT round to multiples of 5.
 
 Respond in JSON only:
 {{"emptiness_pct": number, "confidence": "high/medium/low", "reason": "理由を30字以内で"}}"""
