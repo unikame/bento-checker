@@ -76,19 +76,21 @@ def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> d
 The tray is dark reddish-brown (like mahogany) with a diamond/grid embossed pattern.
 
 STEP 1: Identify the tray bottom color and pattern in this image.
-STEP 2: Find ALL areas where this dark reddish-brown diamond-patterned tray surface is directly visible — with no food covering it.
+STEP 2: Find areas where the tray bottom is directly visible with NO food or cup covering it.
 STEP 3: Calculate what percentage of the total compartment area those bare tray areas represent.
 
-EMPTY = bare dark reddish-brown tray surface is visible (no food on top)
-FILLED = anything covering the tray: food, cups, dividers, paper liners
+EMPTY = bare tray surface with absolutely nothing on it
+FILLED = any of the following:
+- Food items (beans, vegetables, meat, egg, pickles, etc.)
+- Paper cups — AND the tray area surrounding/beneath each cup is also FILLED
+  (if a cup exists in the compartment, treat the entire zone around it as filled)
+- Dividers, paper liners
+- Transparent or semi-transparent food (pickles, jellied items)
 
-Important notes:
-- The area to the LEFT of a tamagoyaki (egg roll) where the tray is exposed = EMPTY
-- Paper cups and their contents = FILLED (do not count as empty)
-- Tiny gaps between foods = NOT empty (only count clearly bare tray areas)
-- Transparent food (pickles etc.) = FILLED
+KEY RULE: If you see paper cups in the image, the tray area around those cups is NOT empty — count it as filled.
+Only count as EMPTY: large bare tray areas where there are clearly NO cups and NO food at all.
 
-emptiness_pct = (bare tray area) / (total compartment area) × 100
+emptiness_pct = (truly bare tray area with no food and no cups nearby) / (total compartment area) × 100
 
 Give exact decimal value (e.g. 3.2, 8.7, 17.4). Do NOT round to multiples of 5.
 
