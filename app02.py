@@ -211,34 +211,38 @@ def detect_bento_areas(img_bgr: np.ndarray):
                     "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
                 }
 
-        # 3エリア検出：上段が1つの塊になっている場合→縦分割
+        # 3エリア検出：上右が検出されていない場合→補完
         if len(food_contours) == 3:
             boxes = []
             for c in food_contours:
                 fx, fy, fw, fh = cv2.boundingRect(c)
-                boxes.append({'x1':fx,'y1':fy,'x2':fx+fw,'y2':fy+fh,'cx':fx+fw/2,'cy':fy+fh/2})
-            cy_med = np.median([b['cy'] for b in boxes])
-            top_boxes = [b for b in boxes if b['cy'] < cy_med]
-            bot_boxes = sorted([b for b in boxes if b['cy'] >= cy_med], key=lambda b: b['cx'])
+                area = cv2.contourArea(c)
+                boxes.append({'x1':fx,'y1':fy,'x2':fx+fw,'y2':fy+fh,'cx':fx+fw/2,'cy':fy+fh/2,'area':area})
 
-            if len(top_boxes) == 1 and len(bot_boxes) == 2:
-                top = top_boxes[0]
-                bl, br = bot_boxes[0], bot_boxes[1]
-                # 上段を縦分割
-                div_x = find_vertical_divider(img_bgr, top['y1'], top['y2'], top['x1'], top['x2'])
+            # ごはん = 最大面積
+            rice = max(boxes, key=lambda b: b['area'])
+            rest = [b for b in boxes if b != rice]
+
+            upper = [b for b in rest if b['cy'] < h * 0.5]
+            lower = [b for b in rest if b['cy'] >= h * 0.5]
+
+            if len(upper) == 1 and len(lower) == 1:
+                tl = upper[0]
+                br = lower[0]
+                # 上右は上左のx2から下右のx2まで、yは上左と同じ
                 return {
-                    "上左（小おかず）": (top['y1'], top['y2'], top['x1'], div_x),
-                    "上右（大おかず）": (top['y1'], top['y2'], div_x, br['x2']),
+                    "上左（小おかず）": (tl['y1'], tl['y2'], tl['x1'], tl['x2']),
+                    "上右（大おかず）": (tl['y1'], tl['y2'], tl['x2'], br['x2']),
                     "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
                 }
-            elif len(top_boxes) == 2 and len(bot_boxes) == 1:
-                top = sorted(top_boxes, key=lambda b: b['cx'])
+            elif len(upper) == 2 and len(lower) == 0:
+                top = sorted(upper, key=lambda b: b['cx'])
                 tl, tr = top[0], top[1]
-                br = bot_boxes[0]
+                br = rice  # ごはんから下右を推定
                 return {
                     "上左（小おかず）": (tl['y1'], tl['y2'], tl['x1'], tl['x2']),
                     "上右（大おかず）": (tr['y1'], tr['y2'], tr['x1'], br['x2']),
-                    "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
+                    "下右（小おかず）": (br['y1'], br['y2'], int(br['x2']), int(br['x2'] + (br['x2']-br['x1'])*0.4)),
                 }
 
     # フォールバック（固定比率）
