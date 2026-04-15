@@ -103,7 +103,7 @@ Respond in JSON only:
 
     try:
         msg = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-4-5",
             max_tokens=256,
             messages=[{
                 "role": "user",
@@ -123,7 +123,10 @@ Respond in JSON only:
             "reason": data.get("reason", "")
         }
     except Exception as e:
-        return {"emptiness_pct": 50.0, "confidence": "low", "reason": f"解析エラー: {e}"}
+        import traceback
+        print(f"[API ERROR] {area_name}: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        return {"emptiness_pct": 50.0, "confidence": "low", "reason": f"エラー: {str(e)[:20]}"}
 
 
 def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
@@ -135,7 +138,7 @@ def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
     b64 = pil_to_base64(img)
     try:
         msg = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-sonnet-4-5",
             max_tokens=300,
             messages=[{
                 "role": "user",
