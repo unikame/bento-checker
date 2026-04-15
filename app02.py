@@ -105,6 +105,7 @@ Respond in JSON only:
         msg = client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=256,
+            temperature=0,
             messages=[{
                 "role": "user",
                 "content": [
