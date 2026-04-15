@@ -154,12 +154,30 @@ def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
 
 
 # --- エリア分割ロジック（食材エリア直接検出）---
+def find_vertical_divider(img_bgr, y1, y2, x1, x2):
+    """上段エリア内の縦仕切り線のX座標を検出する"""
+    h_roi = y2 - y1
+    w_roi = x2 - x1
+    roi = img_bgr[y1:y2, x1:x2]
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    t1 = cv2.inRange(hsv, np.array([0,  60, 40]),  np.array([15, 255, 180]))
+    t2 = cv2.inRange(hsv, np.array([165,60, 40]),  np.array([180,255, 180]))
+    tray = cv2.bitwise_or(t1, t2)
+    col_d = np.sum(tray > 0, axis=0) / h_roi
+    # x=25%〜55%の範囲で最大密度の列を仕切りとする
+    s = int(w_roi * 0.25)
+    e = int(w_roi * 0.55)
+    if e <= s:
+        return x1 + w_roi // 2
+    local_peak = int(np.argmax(col_d[s:e]))
+    return x1 + s + local_peak
+
 def detect_bento_areas(img_bgr: np.ndarray):
     h, w = img_bgr.shape[:2]
 
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    tray1 = cv2.inRange(hsv, np.array([0,  120, 60]),  np.array([10, 255, 160]))
-    tray2 = cv2.inRange(hsv, np.array([170,120, 60]),  np.array([180,255, 160]))
+    tray1 = cv2.inRange(hsv, np.array([0,  60, 40]),  np.array([15, 255, 180]))
+    tray2 = cv2.inRange(hsv, np.array([165,60, 40]),  np.array([180,255, 180]))
     tray_mask = cv2.bitwise_or(tray1, tray2)
     kernel = np.ones((20,20), np.uint8)
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_CLOSE, kernel)
@@ -176,26 +194,54 @@ def detect_bento_areas(img_bgr: np.ndarray):
         food_contours = [c for c in food_contours if cv2.contourArea(c) > min_area]
         food_contours = sorted(food_contours, key=cv2.contourArea, reverse=True)[:4]
 
+        # 4エリア検出成功
         if len(food_contours) == 4:
             boxes = []
             for c in food_contours:
                 fx, fy, fw, fh = cv2.boundingRect(c)
                 boxes.append({'x1':fx,'y1':fy,'x2':fx+fw,'y2':fy+fh,'cx':fx+fw/2,'cy':fy+fh/2})
-
             cy_med = np.median([b['cy'] for b in boxes])
             top = sorted([b for b in boxes if b['cy'] < cy_med], key=lambda b: b['cx'])
             bot = sorted([b for b in boxes if b['cy'] >= cy_med], key=lambda b: b['cx'])
-
             if len(top) == 2 and len(bot) == 2:
                 tl, tr, bl, br = top[0], top[1], bot[0], bot[1]
-                tr_x2 = br['x2']
                 return {
                     "上左（小おかず）": (tl['y1'], tl['y2'], tl['x1'], tl['x2']),
-                    "上右（大おかず）": (tr['y1'], tr['y2'], tr['x1'], tr_x2),
+                    "上右（大おかず）": (tr['y1'], tr['y2'], tr['x1'], br['x2']),
                     "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
                 }
 
-    # フォールバック
+        # 3エリア検出：上段が1つの塊になっている場合→縦分割
+        if len(food_contours) == 3:
+            boxes = []
+            for c in food_contours:
+                fx, fy, fw, fh = cv2.boundingRect(c)
+                boxes.append({'x1':fx,'y1':fy,'x2':fx+fw,'y2':fy+fh,'cx':fx+fw/2,'cy':fy+fh/2})
+            cy_med = np.median([b['cy'] for b in boxes])
+            top_boxes = [b for b in boxes if b['cy'] < cy_med]
+            bot_boxes = sorted([b for b in boxes if b['cy'] >= cy_med], key=lambda b: b['cx'])
+
+            if len(top_boxes) == 1 and len(bot_boxes) == 2:
+                top = top_boxes[0]
+                bl, br = bot_boxes[0], bot_boxes[1]
+                # 上段を縦分割
+                div_x = find_vertical_divider(img_bgr, top['y1'], top['y2'], top['x1'], top['x2'])
+                return {
+                    "上左（小おかず）": (top['y1'], top['y2'], top['x1'], div_x),
+                    "上右（大おかず）": (top['y1'], top['y2'], div_x, br['x2']),
+                    "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
+                }
+            elif len(top_boxes) == 2 and len(bot_boxes) == 1:
+                top = sorted(top_boxes, key=lambda b: b['cx'])
+                tl, tr = top[0], top[1]
+                br = bot_boxes[0]
+                return {
+                    "上左（小おかず）": (tl['y1'], tl['y2'], tl['x1'], tl['x2']),
+                    "上右（大おかず）": (tr['y1'], tr['y2'], tr['x1'], br['x2']),
+                    "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
+                }
+
+    # フォールバック（固定比率）
     y1          = int(h * 0.10)
     h_split     = int(h * 0.46)
     x1_top      = int(w * 0.10)
