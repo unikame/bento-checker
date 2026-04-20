@@ -15,6 +15,7 @@ st.set_page_config(page_title="Bento Checker Pro", layout="wide", page_icon="�
 
 DB_FILE = "shared_history.csv"
 SAVE_DIR = "history_images"
+REFERENCE_FILE = "reference_empty.jpg"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 # --- スタイル ---
@@ -45,6 +46,8 @@ div[data-testid="stFileUploader"] { background: white; border: 2px dashed #d0ccc
 [data-testid="stSidebar"] .stButton button { background: #2a2a2a; border: 1px solid #3a3a3a; color: #f0ede8; border-radius: 10px; font-size: 0.8rem; }
 [data-testid="stSidebar"] .stButton button:hover { background: #3a3a3a; border-color: #555; }
 .new-scan-btn button { background: #f0ede8 !important; color: #1a1a1a !important; font-family: 'Space Mono', monospace !important; font-weight: 700 !important; border-radius: 10px !important; border: none !important; }
+.ref-status-ok { background: #1f3a2a; color: #7fdba0 !important; padding: 8px 12px; border-radius: 8px; font-size: 0.75rem; }
+.ref-status-ng { background: #3a2a1f; color: #e0a070 !important; padding: 8px 12px; border-radius: 8px; font-size: 0.75rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -66,37 +69,112 @@ def pil_to_base64(img: Image.Image, fmt="JPEG") -> str:
     return base64.standard_b64encode(buf.getvalue()).decode("utf-8")
 
 
+# --- リファレンス画像の管理 ---
+def load_reference_image():
+    if os.path.exists(REFERENCE_FILE):
+        try:
+            return Image.open(REFERENCE_FILE).convert("RGB")
+        except Exception:
+            return None
+    return None
+
+
+def save_reference_image(img_pil: Image.Image):
+    # 画像サイズが大きすぎる場合はリサイズして保存
+    max_side = 1600
+    w, h = img_pil.size
+    if max(w, h) > max_side:
+        scale = max_side / max(w, h)
+        img_pil = img_pil.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    img_pil.save(REFERENCE_FILE, quality=92)
+
+
+def delete_reference_image():
+    if os.path.exists(REFERENCE_FILE):
+        try:
+            os.remove(REFERENCE_FILE)
+        except Exception:
+            pass
+
 
 # --- Claude Vision による充填率判定 ---
-def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> dict:
+def analyze_area_with_claude(client, area_img: Image.Image, area_name: str, reference_img: Image.Image = None) -> dict:
     b64 = pil_to_base64(area_img)
 
     # 大おかずエリアは食材間の隙間も空きとしてカウントする厳格モード
     if "大おかず" in area_name:
         area_rules = """
-【大おかずエリア専用ルール】
-このエリアはカップなしで食材が直置きされています。厳格に判定してください。
-
-追加ルール：
-- ハンバーグ・コロッケ・卵焼きなど個別の食材の「間」に見えるトレー底面 → 空き
-- 食材が2〜3個並んでいる場合、それらの隙間を全て合算して空き率に含める
+【大おかずエリア専用ルール（厳格判定）】
+このエリアはカップなしで食材が直置きされています。
+- ハンバーグ・コロッケ・卵焼きなど、食材と食材の「間」にトレー底面（赤い菱形模様）が見えたら必ず空きとしてカウントすること
+- 小さな隙間も見逃さず、すべて合算すること
 - 食材の「下」や「内部」は埋まりだが、食材と食材の「間の空間」は空き
-- 少しでも隙間が見えれば積極的に空きとしてカウントすること
+- 少しでも菱形模様が見えれば積極的に空きとして判定"""
+    else:
+        area_rules = ""
 
+    # リファレンス画像がある場合は比較ベースのプロンプト
+    if reference_img is not None:
+        ref_b64 = pil_to_base64(reference_img)
+
+        prompt = f"""お弁当の品質検査をしてください。
+
+【画像1】空の容器（リファレンス）
+食材を入れる前の状態です。赤い菱形模様のトレー底面が全面に見えています。
+この「赤い菱形模様」こそが "空き" の見た目です。
+
+【画像2】検査対象エリア「{area_name}」
+このエリアの「空き率」を計算してください。
+
+判定手順：
+1. 画像1で「空きの見た目（赤い菱形模様）」を確認する
+2. 画像2の中で、同じ赤い菱形模様が見えている箇所を全て探す
+3. 空き率 = 菱形模様が見える面積 ÷ エリア全体の面積 × 100
+
+基本ルール：
+- 食材（肉・野菜・卵・米・漬物など）で覆われている → 埋まり
+- 紙カップ・仕切り紙で覆われている → 埋まり（カップの下の面積もカップ分は埋まり扱い）
+- 画像1と同じ赤い菱形模様が見える → 空き
+- 食材と食材の「間」に菱形模様が見えたら、それは空きとしてカウントする
+{area_rules}
+
+目安スケール：
+- 画像1と見比べて、菱形模様がほぼ見えない → 2〜6%
+- わずかに食材の間に菱形模様が見える → 8〜15%
+- 明確に食材の間にトレー底面が露出している → 15〜30%
+- 大きく空きが目立つ → 30%以上
+
+重要：絶対に0.0%は返さないでください。最低でも2%以上を返すこと。
+小数点1桁で回答（例：3.2、8.7、17.4）。5の倍数に丸めないでください。
+
+JSON形式のみで回答：
+{{"emptiness_pct": 数値, "confidence": "high/medium/low", "reason": "判断理由を20字以内"}}"""
+
+        content = [
+            {"type": "text", "text": "画像1: 空の容器（リファレンス）"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": ref_b64}},
+            {"type": "text", "text": f"画像2: 検査対象エリア「{area_name}」"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+            {"type": "text", "text": prompt},
+        ]
+    else:
+        # リファレンスなしの従来プロンプト（フォールバック）
+        if "大おかず" in area_name:
+            scale_guide = """
 目安スケール（大おかず専用・厳格版）：
 - 食材がすき間なくぴったり詰まっている → 3〜6%
 - 食材間にわずかな隙間が見える → 8〜15%
 - 食材間に明確な隙間がある → 15〜25%
 - 食材が少なく空きが目立つ → 25%以上"""
-    else:
-        area_rules = """
+        else:
+            scale_guide = """
 目安スケール：
 - ほぼ完全に埋まっている（食材がぎっしり）→ 2〜8%
 - 少し隙間がある → 8〜20%
 - 明らかに空きがある → 20〜40%
 - 半分以上空き → 40%以上"""
 
-    prompt = f"""お弁当の品質検査をしてください。画像は「{area_name}」エリアです。
+        prompt = f"""お弁当の品質検査をしてください。画像は「{area_name}」エリアです。
 
 このエリアの「空き率」を計算してください。
 
@@ -109,6 +187,7 @@ def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> d
 2. カップ（紙カップ）がある → カップ自体もその周囲も埋まり
 3. トレー底面が広く露出している → 空き
 {area_rules}
+{scale_guide}
 
 重要：絶対に0.0%は返さないでください。最低でも2%以上を返すこと。
 
@@ -118,17 +197,16 @@ def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> d
 JSON形式のみで回答：
 {{"emptiness_pct": 数値, "confidence": "high/medium/low", "reason": "判断理由を20字以内"}}"""
 
+        content = [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
+            {"type": "text", "text": prompt},
+        ]
+
     try:
         msg = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=256,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-                    {"type": "text", "text": prompt},
-                ]
-            }]
+            messages=[{"role": "user", "content": content}]
         )
         raw = msg.content[0].text.strip()
         start = raw.find("{")
@@ -420,7 +498,7 @@ def delete_history_item(idx: int) -> bool:
 
 
 # --- セッション初期化 ---
-for key, val in [('last_processed_file', None), ('selected_idx', None)]:
+for key, val in [('last_processed_file', None), ('selected_idx', None), ('show_ref_upload', False)]:
     if key not in st.session_state:
         st.session_state[key] = val
 
@@ -443,6 +521,45 @@ with st.sidebar:
             st.session_state.last_processed_file = None
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
+
+    # --- リファレンス画像（空容器）の管理 ---
+    st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:0.7rem; color:#888; letter-spacing:2px; margin-bottom:6px;">REFERENCE (空容器)</div>', unsafe_allow_html=True)
+
+    ref_img = load_reference_image()
+    if ref_img is not None:
+        st.markdown('<div class="ref-status-ok">✓ 空容器登録済</div>', unsafe_allow_html=True)
+        st.image(ref_img, use_container_width=True)
+        col_re, col_del = st.columns(2)
+        with col_re:
+            if st.button("更新", key="ref_update", use_container_width=True):
+                st.session_state.show_ref_upload = True
+                st.rerun()
+        with col_del:
+            if st.button("削除", key="ref_delete", use_container_width=True):
+                delete_reference_image()
+                st.session_state.show_ref_upload = False
+                st.rerun()
+    else:
+        st.markdown('<div class="ref-status-ng">未登録（従来ロジック）</div>', unsafe_allow_html=True)
+        st.session_state.show_ref_upload = True
+
+    if st.session_state.show_ref_upload:
+        ref_up = st.file_uploader(
+            "空容器の写真を登録",
+            type=['jpg', 'jpeg', 'png'],
+            key="ref_uploader",
+            help="食材を入れる前の空容器を撮影して登録してください"
+        )
+        if ref_up is not None:
+            try:
+                ref_pil = Image.open(ref_up).convert("RGB")
+                save_reference_image(ref_pil)
+                st.session_state.show_ref_upload = False
+                st.success("リファレンスを登録しました")
+                st.rerun()
+            except Exception as e:
+                st.error(f"登録失敗: {e}")
 
     st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
 
@@ -526,6 +643,10 @@ if st.session_state.selected_idx is not None and st.session_state.selected_idx <
 
 # --- 新規スキャン ---
 else:
+    # リファレンス未登録時のガイド
+    if load_reference_image() is None:
+        st.info("💡 左サイドバーから「空容器」のリファレンス画像を登録すると、比較ベースで判定精度が大幅に向上します。")
+
     up = st.file_uploader(
         "お弁当の写真をアップロード",
         type=['jpg', 'jpeg', 'png'],
@@ -537,6 +658,9 @@ else:
 
         img_orig = Image.open(up).convert("RGB")
         img_bgr  = cv2.cvtColor(np.array(img_orig), cv2.COLOR_RGB2BGR)
+
+        # リファレンス画像をロード（分析時）
+        ref_img_for_analysis = load_reference_image()
 
         progress_bar.progress(10, text="トレーを検出中...")
         areas = detect_bento_areas(img_bgr)
@@ -565,7 +689,7 @@ else:
             x2c = max(x1c+1, min(int(x2), img_w))
             y2c = max(y1c+1, min(int(y2), img_h))
             roi = img_orig.crop((x1c, y1c, x2c, y2c))
-            analysis = analyze_area_with_claude(client, roi, name)
+            analysis = analyze_area_with_claude(client, roi, name, reference_img=ref_img_for_analysis)
             results.append({
                 "name": name,
                 "emptiness_pct": analysis["emptiness_pct"],
