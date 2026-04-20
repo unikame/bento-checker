@@ -71,6 +71,31 @@ def pil_to_base64(img: Image.Image, fmt="JPEG") -> str:
 def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> dict:
     b64 = pil_to_base64(area_img)
 
+    # 大おかずエリアは食材間の隙間も空きとしてカウントする厳格モード
+    if "大おかず" in area_name:
+        area_rules = """
+【大おかずエリア専用ルール】
+このエリアはカップなしで食材が直置きされています。厳格に判定してください。
+
+追加ルール：
+- ハンバーグ・コロッケ・卵焼きなど個別の食材の「間」に見えるトレー底面 → 空き
+- 食材が2〜3個並んでいる場合、それらの隙間を全て合算して空き率に含める
+- 食材の「下」や「内部」は埋まりだが、食材と食材の「間の空間」は空き
+- 少しでも隙間が見えれば積極的に空きとしてカウントすること
+
+目安スケール（大おかず専用・厳格版）：
+- 食材がすき間なくぴったり詰まっている → 3〜6%
+- 食材間にわずかな隙間が見える → 8〜15%
+- 食材間に明確な隙間がある → 15〜25%
+- 食材が少なく空きが目立つ → 25%以上"""
+    else:
+        area_rules = """
+目安スケール：
+- ほぼ完全に埋まっている（食材がぎっしり）→ 2〜8%
+- 少し隙間がある → 8〜20%
+- 明らかに空きがある → 20〜40%
+- 半分以上空き → 40%以上"""
+
     prompt = f"""お弁当の品質検査をしてください。画像は「{area_name}」エリアです。
 
 このエリアの「空き率」を計算してください。
@@ -79,24 +104,16 @@ def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> d
 - 空き = トレーの赤茶色の底面（菱形模様）が直接見えている部分
 - 埋まり = 食材・カップ・仕切り紙で覆われている部分
 
-判定ルール：
+基本判定ルール：
 1. 食材（野菜・肉・卵・漬物・豆など）がある → 埋まり
 2. カップ（紙カップ）がある → カップ自体もその周囲も埋まり
-3. 卵焼きが右側にあって左側にトレー底面が見える → 左側は空き
-4. 食材間の小さな隙間 → 埋まりとしてカウント（空きにしない）
-5. トレー底面が広く露出している → 空き
+3. トレー底面が広く露出している → 空き
+{area_rules}
+
+重要：絶対に0.0%は返さないでください。最低でも2%以上を返すこと。
 
 空き率 = 空きの面積 ÷ エリア全体の面積 × 100
-
-重要：絶対に0.0%は返さないでください。
-食材があっても食材間・食材周囲の微細な隙間や角の露出で最低2〜5%はあります。
-目安スケール：
-- ほぼ完全に埋まっている（食材がぎっしり）→ 2〜8%
-- 少し隙間がある → 8〜20%
-- 明らかに空きがある → 20〜40%
-- 半分以上空き → 40%以上
-
-小数点1桁で回答してください（例：3.2、8.7、17.4）。5の倍数に丸めないでください。
+小数点1桁で回答（例：3.2、8.7、17.4）。5の倍数に丸めないでください。
 
 JSON形式のみで回答：
 {{"emptiness_pct": 数値, "confidence": "high/medium/low", "reason": "判断理由を20字以内"}}"""
@@ -560,7 +577,13 @@ else:
         # 平均・PASS判定はご飯除外
         target_results = [r for r in results if r["name"] != "下左（ごはん）"]
         avg_pct = np.mean([r["emptiness_pct"] for r in target_results]) if target_results else 0.0
-        is_pass = avg_pct < 20.0 and all(r["emptiness_pct"] < 30.0 for r in target_results)
+        def area_passes(r):
+            pct = r["emptiness_pct"]
+            if "大おかず" in r["name"]:
+                return pct < 8.0   # 大おかずは厳格：8%未満でPASS
+            return pct < 20.0      # その他：20%未満でPASS
+
+        is_pass = avg_pct < 15.0 and all(area_passes(r) for r in target_results)
 
         ai_comment = analyze_overall_with_claude(client, img_orig, target_results)
 
