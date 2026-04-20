@@ -106,21 +106,16 @@ def get_reference_tray_lab(ref_mtime: float):
         return None
     ref_bgr = cv2.cvtColor(np.array(ref_img), cv2.COLOR_RGB2BGR)
     ref_lab = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2LAB)
-    h, w = ref_lab.shape[:2]
 
-    # 画像全体からトレー色をサンプリング。赤系のピクセルのみ抽出。
     ref_hsv = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2HSV)
-    # H=0-15 or H=165-180, S>=60, V>=30 のピクセルをトレー候補とする
     m1 = cv2.inRange(ref_hsv, np.array([0, 60, 30]), np.array([15, 255, 230]))
     m2 = cv2.inRange(ref_hsv, np.array([165, 60, 30]), np.array([180, 255, 230]))
     tray_candidate = cv2.bitwise_or(m1, m2)
 
-    # ノイズ除去
     kernel = np.ones((5, 5), np.uint8)
     tray_candidate = cv2.morphologyEx(tray_candidate, cv2.MORPH_OPEN, kernel)
 
     if np.sum(tray_candidate > 0) < 1000:
-        # リファレンスから十分なトレー色サンプルが取れない → デフォルト値
         return None
 
     lab_pixels = ref_lab[tray_candidate > 0]
@@ -143,35 +138,48 @@ def get_reference_tray_lab_current():
 # --- 空き率計算（OpenCV ベース）---
 def compute_emptiness_cv(roi_pil: Image.Image, area_name: str,
                          ref_lab_stats: dict = None,
-                         tolerance: float = 22.0) -> dict:
+                         tolerance: float = 25.0) -> dict:
     """
     ROI 内で「トレー色（赤い菱形模様）」のピクセル比率を計算。
 
-    - リファレンス学習済 → LAB 色空間での距離ベース判定（食材の茶・赤を誤検出しにくい）
+    - リファレンス学習済 → LAB 色空間での距離ベース判定
     - 未学習 → HSV 範囲ベース判定（フォールバック）
+
+    小おかずエリア（カップが置かれる）では、カップ同士の間に必ず発生する
+    構造的な小ギャップを除外するため、食材マスクに対して MORPH_CLOSE を適用する。
     """
     roi_bgr = cv2.cvtColor(np.array(roi_pil), cv2.COLOR_RGB2BGR)
 
     if ref_lab_stats is not None:
         roi_lab = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
         ref_mean = np.array(ref_lab_stats["mean"], dtype=np.float32)
-        # A・B チャンネル（色味）に重みを置き、L（明度）は緩めに扱う
-        # → 照明ムラに強い
         diff = roi_lab - ref_mean
         weights = np.array([0.5, 1.2, 1.2], dtype=np.float32)
         weighted = diff * weights
         dist = np.sqrt(np.sum(weighted * weighted, axis=2))
         tray_mask = (dist < tolerance).astype(np.uint8) * 255
     else:
-        # HSV フォールバック（やや厳しめ）
         hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
         m1 = cv2.inRange(hsv, np.array([0, 90, 50]),   np.array([12, 230, 180]))
         m2 = cv2.inRange(hsv, np.array([168, 90, 50]), np.array([180, 230, 180]))
         tray_mask = cv2.bitwise_or(m1, m2)
 
-    # 小さな孤立ノイズを除去
+    # 小さな孤立ノイズ除去
     kernel_small = np.ones((3, 3), np.uint8)
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_OPEN, kernel_small)
+
+    # --- 小おかずエリア専用: カップ間の構造ギャップを吸収 ---
+    if "小おかず" in area_name:
+        h_roi, w_roi = tray_mask.shape[:2]
+        # ROI の短辺の 15% をブリッジサイズとする（カップ間の隙間幅を想定）
+        bridge_size = max(25, int(min(h_roi, w_roi) * 0.15))
+        if bridge_size % 2 == 0:
+            bridge_size += 1
+        food_mask = cv2.bitwise_not(tray_mask)
+        kernel_bridge = np.ones((bridge_size, bridge_size), np.uint8)
+        # 食材マスクを CLOSE することで、カップ間の小ギャップが食材側に吸収される
+        food_bridged = cv2.morphologyEx(food_mask, cv2.MORPH_CLOSE, kernel_bridge)
+        tray_mask = cv2.bitwise_not(food_bridged)
 
     total_px = tray_mask.size
     tray_px = int(np.sum(tray_mask > 0))
@@ -222,6 +230,7 @@ def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
 {summary}
 
 ※空き率は、各エリア内で「トレーの赤い底面が露出しているピクセル比率」を画像処理で算出した客観値です。
+※判定基準：大おかずエリアは15%以上で NG、小おかずエリアは20%以上で NG。
 
 品質検査員として充填状況の総評を日本語で2〜3文で述べてください。改善が必要な点があれば具体的に指摘してください。"""
     b64 = pil_to_base64(img)
@@ -270,7 +279,6 @@ def detect_bento_areas(img_bgr: np.ndarray):
         food_contours = [c for c in food_contours if cv2.contourArea(c) > min_area]
         food_contours = sorted(food_contours, key=cv2.contourArea, reverse=True)[:4]
 
-        # 4エリア検出成功
         if len(food_contours) == 4:
             boxes = []
             for c in food_contours:
@@ -287,7 +295,6 @@ def detect_bento_areas(img_bgr: np.ndarray):
                     "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
                 }
 
-        # 3エリア検出：欠けているエリアを補完
         if len(food_contours) == 3:
             boxes = []
             for c in food_contours:
@@ -351,6 +358,25 @@ def detect_bento_areas(img_bgr: np.ndarray):
     }
 
 
+# --- 判定閾値 ---
+# 大おかず: 15%以上で NG（食材直置きなので厳しめ）
+# 小おかず: 20%以上で NG（カップ込みで判定）
+THRESHOLD_OOKAZU = 15.0
+THRESHOLD_KOOKAZU = 20.0
+
+
+def pct_color(pct: float, area_name: str) -> tuple:
+    """空き率に応じた色（RGBタプル）を返す"""
+    threshold = THRESHOLD_OOKAZU if "大おかず" in area_name else THRESHOLD_KOOKAZU
+    warn_zone = threshold * 0.7  # 閾値の70%で警告色
+    if pct < warn_zone:
+        return (46, 204, 113)  # green
+    elif pct < threshold:
+        return (243, 156, 18)  # yellow
+    else:
+        return (231, 76, 60)   # red
+
+
 def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list, area_masks: dict = None) -> Image.Image:
     result_map = {r["name"]: r for r in results}
     w, h = img_pil.size
@@ -388,12 +414,9 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list, area
         x2, y2 = max(x1+1, min(x2, w)), max(y1+1, min(y2, h))
         r = result_map.get(name, {})
         pct = r.get("emptiness_pct", 0)
-        if pct < 8:
-            color = (46, 204, 113); alpha = 30
-        elif pct < 20:
-            color = (243, 156, 18); alpha = 40
-        else:
-            color = (231, 76, 60); alpha = 50
+        color = pct_color(pct, name)
+        threshold = THRESHOLD_OOKAZU if "大おかず" in name else THRESHOLD_KOOKAZU
+        alpha = 30 if pct < threshold * 0.7 else (40 if pct < threshold else 50)
         ov_draw.rectangle([x1, y1, x2, y2], fill=(*color, alpha))
 
     output = Image.alpha_composite(output, overlay).convert('RGB')
@@ -405,12 +428,7 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list, area
             continue
         r = result_map.get(name, {})
         pct = r.get("emptiness_pct", 0)
-        if pct < 8:
-            color = (46, 204, 113)
-        elif pct < 20:
-            color = (243, 156, 18)
-        else:
-            color = (231, 76, 60)
+        color = pct_color(pct, name)
 
         draw.rectangle([x1, y1, x2, y2], outline=(*color, 255), width=line_w)
 
@@ -468,7 +486,7 @@ def delete_history_item(idx: int) -> bool:
 
 # --- セッション初期化 ---
 for key, val in [('last_processed_file', None), ('selected_idx', None),
-                 ('show_ref_upload', False), ('color_tolerance', 22.0)]:
+                 ('show_ref_upload', False), ('color_tolerance', 25.0)]:
     if key not in st.session_state:
         st.session_state[key] = val
 
@@ -546,6 +564,14 @@ with st.sidebar:
         label_visibility="collapsed"
     )
 
+    # --- 判定閾値の表示 ---
+    st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
+    st.markdown(f'''<div style="font-size:0.7rem; color:#888; letter-spacing:2px; margin-bottom:6px;">判定閾値 (NG)</div>
+    <div style="font-size:0.78rem; color:#ccc; line-height:1.7;">
+      大おかず: <b>≥ {THRESHOLD_OOKAZU:.0f}%</b><br>
+      小おかず: <b>≥ {THRESHOLD_KOOKAZU:.0f}%</b>
+    </div>''', unsafe_allow_html=True)
+
     st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
 
     history = load_shared_history()
@@ -607,7 +633,13 @@ if st.session_state.selected_idx is not None and st.session_state.selected_idx <
                     continue
                 try:
                     pct = float(pct_str.replace("%", ""))
-                    cls = "pass" if pct < 8 else ("warn" if pct < 20 else "fail")
+                    threshold = THRESHOLD_OOKAZU if "大おかず" in nm else THRESHOLD_KOOKAZU
+                    if pct < threshold * 0.7:
+                        cls = "pass"
+                    elif pct < threshold:
+                        cls = "warn"
+                    else:
+                        cls = "fail"
                     st.markdown(f'''<div class="metric-card {cls}">
                         <div class="metric-title">{nm}</div>
                         <div class="metric-value">{pct:.1f}%</div>
@@ -639,7 +671,6 @@ else:
         img_orig = Image.open(up).convert("RGB")
         img_bgr  = cv2.cvtColor(np.array(img_orig), cv2.COLOR_RGB2BGR)
 
-        # リファレンスの LAB 統計をロード
         ref_lab_stats = get_reference_tray_lab_current()
         tolerance = float(st.session_state.color_tolerance)
 
@@ -685,10 +716,10 @@ else:
         def area_passes(r):
             pct = r["emptiness_pct"]
             if "大おかず" in r["name"]:
-                return pct < 8.0   # 大おかずは厳格
-            return pct < 20.0      # その他
+                return pct < THRESHOLD_OOKAZU
+            return pct < THRESHOLD_KOOKAZU
 
-        is_pass = avg_pct < 15.0 and all(area_passes(r) for r in target_results)
+        is_pass = all(area_passes(r) for r in target_results)
 
         ai_comment = analyze_overall_with_claude(client, img_orig, target_results)
 
