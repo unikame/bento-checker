@@ -69,6 +69,21 @@ def pil_to_base64(img: Image.Image, fmt="JPEG") -> str:
     return base64.standard_b64encode(buf.getvalue()).decode("utf-8")
 
 
+# --- 座標クランプ ヘルパー ---
+def clamp_rect(y1, y2, x1, x2, w: int, h: int):
+    """座標を [0, w-1] × [0, h-1] にクランプ。退化した矩形は None を返す。"""
+    try:
+        x1i = max(0, min(int(x1), w - 1))
+        y1i = max(0, min(int(y1), h - 1))
+        x2i = max(0, min(int(x2), w - 1))
+        y2i = max(0, min(int(y2), h - 1))
+    except (TypeError, ValueError):
+        return None
+    if x2i <= x1i or y2i <= y1i:
+        return None
+    return x1i, y1i, x2i, y2i
+
+
 # --- リファレンス画像の管理 ---
 def load_reference_image():
     if os.path.exists(REFERENCE_FILE):
@@ -171,13 +186,11 @@ def compute_emptiness_cv(roi_pil: Image.Image, area_name: str,
     # --- 小おかずエリア専用: カップ間の構造ギャップを吸収 ---
     if "小おかず" in area_name:
         h_roi, w_roi = tray_mask.shape[:2]
-        # ROI の短辺の 15% をブリッジサイズとする（カップ間の隙間幅を想定）
         bridge_size = max(25, int(min(h_roi, w_roi) * 0.15))
         if bridge_size % 2 == 0:
             bridge_size += 1
         food_mask = cv2.bitwise_not(tray_mask)
         kernel_bridge = np.ones((bridge_size, bridge_size), np.uint8)
-        # 食材マスクを CLOSE することで、カップ間の小ギャップが食材側に吸収される
         food_bridged = cv2.morphologyEx(food_mask, cv2.MORPH_CLOSE, kernel_bridge)
         tray_mask = cv2.bitwise_not(food_bridged)
 
@@ -206,15 +219,18 @@ def overlay_tray_mask(img_pil: Image.Image, areas: dict, area_masks: dict) -> Im
         mask = area_masks.get(name)
         if mask is None:
             continue
-        x1i, y1i = max(0, int(x1)), max(0, int(y1))
-        x2i, y2i = min(w, int(x2)), min(h, int(y2))
-        mh, mw = mask.shape[:2]
+        clamped = clamp_rect(y1, y2, x1, x2, w, h)
+        if clamped is None:
+            continue
+        x1i, y1i, x2i, y2i = clamped
         area_w = x2i - x1i
         area_h = y2i - y1i
-        if area_w <= 0 or area_h <= 0:
-            continue
+        mh, mw = mask.shape[:2]
         if (mw, mh) != (area_w, area_h):
-            mask = cv2.resize(mask, (area_w, area_h), interpolation=cv2.INTER_NEAREST)
+            try:
+                mask = cv2.resize(mask, (area_w, area_h), interpolation=cv2.INTER_NEAREST)
+            except Exception:
+                continue
         rgba = np.zeros((area_h, area_w, 4), dtype=np.uint8)
         rgba[mask > 0] = [255, 230, 0, 170]
         patch = Image.fromarray(rgba, 'RGBA')
@@ -359,16 +375,14 @@ def detect_bento_areas(img_bgr: np.ndarray):
 
 
 # --- 判定閾値 ---
-# 大おかず: 15%以上で NG（食材直置きなので厳しめ）
-# 小おかず: 20%以上で NG（カップ込みで判定）
-THRESHOLD_OOKAZU = 15.0
-THRESHOLD_KOOKAZU = 20.0
+THRESHOLD_OOKAZU = 15.0   # 大おかず: 15%以上で NG
+THRESHOLD_KOOKAZU = 20.0  # 小おかず: 20%以上で NG
 
 
 def pct_color(pct: float, area_name: str) -> tuple:
     """空き率に応じた色（RGBタプル）を返す"""
     threshold = THRESHOLD_OOKAZU if "大おかず" in area_name else THRESHOLD_KOOKAZU
-    warn_zone = threshold * 0.7  # 閾値の70%で警告色
+    warn_zone = threshold * 0.7
     if pct < warn_zone:
         return (46, 204, 113)  # green
     elif pct < threshold:
@@ -406,31 +420,42 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list, area
     overlay = Image.new('RGBA', (w, h), (0, 0, 0, 0))
     ov_draw = ImageDraw.Draw(overlay)
 
+    # 座標を事前にクランプして使い回す（2回目のループでも同じ値を使う）
+    clamped_areas = {}
     for name, (y1, y2, x1, x2) in areas.items():
         if name == "下左（ごはん）":
             continue
-        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = max(x1+1, min(x2, w)), max(y1+1, min(y2, h))
+        clamped = clamp_rect(y1, y2, x1, x2, w, h)
+        if clamped is None:
+            continue
+        clamped_areas[name] = clamped
+
+    # 半透明塗りつぶし（エリア全体）
+    for name, (x1, y1, x2, y2) in clamped_areas.items():
         r = result_map.get(name, {})
         pct = r.get("emptiness_pct", 0)
         color = pct_color(pct, name)
         threshold = THRESHOLD_OOKAZU if "大おかず" in name else THRESHOLD_KOOKAZU
         alpha = 30 if pct < threshold * 0.7 else (40 if pct < threshold else 50)
-        ov_draw.rectangle([x1, y1, x2, y2], fill=(*color, alpha))
+        try:
+            ov_draw.rectangle([x1, y1, x2, y2], fill=(color[0], color[1], color[2], alpha))
+        except Exception as e:
+            print(f"[DRAW ERROR fill {name}] {e}")
 
     output = Image.alpha_composite(output, overlay).convert('RGB')
     draw = ImageDraw.Draw(output, 'RGBA')
 
     line_w = max(4, int(w * 0.005))
-    for name, (y1, y2, x1, x2) in areas.items():
-        if name == "下左（ごはん）":
-            continue
+    for name, (x1, y1, x2, y2) in clamped_areas.items():
         r = result_map.get(name, {})
         pct = r.get("emptiness_pct", 0)
         color = pct_color(pct, name)
 
-        draw.rectangle([x1, y1, x2, y2], outline=(*color, 255), width=line_w)
+        try:
+            draw.rectangle([x1, y1, x2, y2], outline=(color[0], color[1], color[2], 255), width=line_w)
+        except Exception as e:
+            print(f"[DRAW ERROR outline {name}] {e}")
+            continue
 
         text = f"{pct:.1f}%"
         cx = (x1 + x2) // 2
@@ -442,12 +467,17 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list, area
         tx = cx - tw // 2 - bx0
         ty = cy - th // 2 - by0
         pad = max(14, int(font_size * 0.45))
-        draw.rectangle(
-            [cx - tw//2 - pad, cy - th//2 - pad,
-             cx + tw//2 + pad, cy + th//2 + pad],
-            fill=(0, 0, 0, 200)
-        )
-        draw.text((tx, ty), text, font=font, fill=(255, 255, 255, 255))
+
+        # テキスト背景（クランプして描画）
+        bg_x1 = max(0, min(cx - tw//2 - pad, w - 1))
+        bg_y1 = max(0, min(cy - th//2 - pad, h - 1))
+        bg_x2 = max(bg_x1 + 1, min(cx + tw//2 + pad, w - 1))
+        bg_y2 = max(bg_y1 + 1, min(cy + th//2 + pad, h - 1))
+        try:
+            draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2], fill=(0, 0, 0, 200))
+            draw.text((tx, ty), text, font=font, fill=(255, 255, 255, 255))
+        except Exception as e:
+            print(f"[DRAW ERROR text {name}] {e}")
 
     return output
 
@@ -695,10 +725,17 @@ else:
                 })
                 continue
             img_w, img_h = img_orig.size
-            x1c = max(0, min(int(x1), img_w-1))
-            y1c = max(0, min(int(y1), img_h-1))
-            x2c = max(x1c+1, min(int(x2), img_w))
-            y2c = max(y1c+1, min(int(y2), img_h))
+            clamped = clamp_rect(y1, y2, x1, x2, img_w, img_h)
+            if clamped is None:
+                # 無効な座標→計測不能
+                results.append({
+                    "name": name,
+                    "emptiness_pct": 0.0,
+                    "confidence": "low",
+                    "reason": "座標不正",
+                })
+                continue
+            x1c, y1c, x2c, y2c = clamped
             roi = img_orig.crop((x1c, y1c, x2c, y2c))
             analysis = compute_emptiness_cv(roi, name, ref_lab_stats=ref_lab_stats, tolerance=tolerance)
             area_masks[name] = analysis.pop("tray_mask", None)
@@ -724,7 +761,14 @@ else:
         ai_comment = analyze_overall_with_claude(client, img_orig, target_results)
 
         progress_bar.progress(92, text="結果を描画中...")
-        output_pil = draw_results_on_image(img_orig, areas, results, area_masks=area_masks)
+        try:
+            output_pil = draw_results_on_image(img_orig, areas, results, area_masks=area_masks)
+        except Exception as e:
+            # 描画に失敗しても処理は継続（元画像を保存）
+            print(f"[DRAW ERROR] {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            output_pil = img_orig
 
         path = f"{SAVE_DIR}/res_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
         output_pil.save(path, quality=92)
