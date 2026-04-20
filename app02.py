@@ -88,6 +88,14 @@ def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> d
 
 空き率 = 空きの面積 ÷ エリア全体の面積 × 100
 
+重要：絶対に0.0%は返さないでください。
+食材があっても食材間・食材周囲の微細な隙間や角の露出で最低2〜5%はあります。
+目安スケール：
+- ほぼ完全に埋まっている（食材がぎっしり）→ 2〜8%
+- 少し隙間がある → 8〜20%
+- 明らかに空きがある → 20〜40%
+- 半分以上空き → 40%以上
+
 小数点1桁で回答してください（例：3.2、8.7、17.4）。5の倍数に丸めないでください。
 
 JSON形式のみで回答：
@@ -95,7 +103,7 @@ JSON形式のみで回答：
 
     try:
         msg = client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=256,
             messages=[{
                 "role": "user",
@@ -133,7 +141,7 @@ def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
     b64 = pil_to_base64(img)
     try:
         msg = client.messages.create(
-            model="claude-sonnet-4-5",
+            model="claude-sonnet-4-6",
             max_tokens=300,
             messages=[{
                 "role": "user",
