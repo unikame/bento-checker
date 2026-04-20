@@ -96,49 +96,93 @@ def delete_reference_image():
             pass
 
 
-# --- トレー色 HSV 範囲 ---
-# 赤系の弁当容器を検出する範囲（H は 0/180 ラップアラウンドに対応）
-TRAY_HSV_RANGES = [
-    (np.array([0,   70, 40]),  np.array([15,  255, 220])),
-    (np.array([165, 70, 40]),  np.array([180, 255, 220])),
-]
+# --- トレー色のリファレンス学習 (LAB 色空間) ---
+@st.cache_data(show_spinner=False)
+def get_reference_tray_lab(ref_mtime: float):
+    """リファレンス画像から「トレー底面色」の LAB 平均値と分散を学習する。
+    ref_mtime は cache 無効化用（ファイルが更新されると自動再計算）。"""
+    ref_img = load_reference_image()
+    if ref_img is None:
+        return None
+    ref_bgr = cv2.cvtColor(np.array(ref_img), cv2.COLOR_RGB2BGR)
+    ref_lab = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2LAB)
+    h, w = ref_lab.shape[:2]
+
+    # 画像全体からトレー色をサンプリング。赤系のピクセルのみ抽出。
+    ref_hsv = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2HSV)
+    # H=0-15 or H=165-180, S>=60, V>=30 のピクセルをトレー候補とする
+    m1 = cv2.inRange(ref_hsv, np.array([0, 60, 30]), np.array([15, 255, 230]))
+    m2 = cv2.inRange(ref_hsv, np.array([165, 60, 30]), np.array([180, 255, 230]))
+    tray_candidate = cv2.bitwise_or(m1, m2)
+
+    # ノイズ除去
+    kernel = np.ones((5, 5), np.uint8)
+    tray_candidate = cv2.morphologyEx(tray_candidate, cv2.MORPH_OPEN, kernel)
+
+    if np.sum(tray_candidate > 0) < 1000:
+        # リファレンスから十分なトレー色サンプルが取れない → デフォルト値
+        return None
+
+    lab_pixels = ref_lab[tray_candidate > 0]
+    lab_mean = np.mean(lab_pixels, axis=0).astype(np.float32)
+    lab_std = np.std(lab_pixels, axis=0).astype(np.float32)
+    return {
+        "mean": tuple(float(x) for x in lab_mean),
+        "std": tuple(float(x) for x in lab_std),
+    }
 
 
-def build_tray_mask(img_bgr: np.ndarray) -> np.ndarray:
-    """BGR画像からトレー色（赤）のマスクを生成"""
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    masks = [cv2.inRange(hsv, lo, hi) for lo, hi in TRAY_HSV_RANGES]
-    mask = masks[0]
-    for m in masks[1:]:
-        mask = cv2.bitwise_or(mask, m)
-    return mask
+def get_reference_tray_lab_current():
+    """現在のリファレンスファイルから LAB 統計値を取得（mtime でキャッシュ）"""
+    if not os.path.exists(REFERENCE_FILE):
+        return None
+    mtime = os.path.getmtime(REFERENCE_FILE)
+    return get_reference_tray_lab(mtime)
 
 
-def compute_emptiness_cv(roi_pil: Image.Image, area_name: str) -> dict:
+# --- 空き率計算（OpenCV ベース）---
+def compute_emptiness_cv(roi_pil: Image.Image, area_name: str,
+                         ref_lab_stats: dict = None,
+                         tolerance: float = 22.0) -> dict:
     """
-    OpenCVでROI内のトレー色（赤い底面）ピクセル比率を空き率として算出。
-    AIの推定ではなく決定的な画像処理で計算するため数値が安定。
+    ROI 内で「トレー色（赤い菱形模様）」のピクセル比率を計算。
+
+    - リファレンス学習済 → LAB 色空間での距離ベース判定（食材の茶・赤を誤検出しにくい）
+    - 未学習 → HSV 範囲ベース判定（フォールバック）
     """
     roi_bgr = cv2.cvtColor(np.array(roi_pil), cv2.COLOR_RGB2BGR)
-    tray_mask = build_tray_mask(roi_bgr)
 
-    # 小さなノイズ（縁のハイライト反射など）を除去
+    if ref_lab_stats is not None:
+        roi_lab = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+        ref_mean = np.array(ref_lab_stats["mean"], dtype=np.float32)
+        # A・B チャンネル（色味）に重みを置き、L（明度）は緩めに扱う
+        # → 照明ムラに強い
+        diff = roi_lab - ref_mean
+        weights = np.array([0.5, 1.2, 1.2], dtype=np.float32)
+        weighted = diff * weights
+        dist = np.sqrt(np.sum(weighted * weighted, axis=2))
+        tray_mask = (dist < tolerance).astype(np.uint8) * 255
+    else:
+        # HSV フォールバック（やや厳しめ）
+        hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
+        m1 = cv2.inRange(hsv, np.array([0, 90, 50]),   np.array([12, 230, 180]))
+        m2 = cv2.inRange(hsv, np.array([168, 90, 50]), np.array([180, 230, 180]))
+        tray_mask = cv2.bitwise_or(m1, m2)
+
+    # 小さな孤立ノイズを除去
     kernel_small = np.ones((3, 3), np.uint8)
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_OPEN, kernel_small)
 
     total_px = tray_mask.size
     tray_px = int(np.sum(tray_mask > 0))
     pct = (tray_px / total_px * 100.0) if total_px > 0 else 0.0
-
-    # 低すぎる値のクランプ（微小ノイズで 0.1% などにならないよう 0.5% 未満は丸め）
-    if pct < 0.3:
-        pct = 0.3
+    pct = max(pct, 0.0)
 
     return {
         "emptiness_pct": round(pct, 1),
         "confidence": "high",
         "reason": f"CV検出 {tray_px:,}/{total_px:,}px",
-        "tray_mask": tray_mask,  # 可視化用
+        "tray_mask": tray_mask,
     }
 
 
@@ -161,12 +205,10 @@ def overlay_tray_mask(img_pil: Image.Image, areas: dict, area_masks: dict) -> Im
         area_h = y2i - y1i
         if area_w <= 0 or area_h <= 0:
             continue
-        # サイズが一致しない場合はリサイズ
         if (mw, mh) != (area_w, area_h):
             mask = cv2.resize(mask, (area_w, area_h), interpolation=cv2.INTER_NEAREST)
-        # 黄色（空き検出）のRGBA画像を作成
         rgba = np.zeros((area_h, area_w, 4), dtype=np.uint8)
-        rgba[mask > 0] = [255, 230, 0, 160]
+        rgba[mask > 0] = [255, 230, 0, 170]
         patch = Image.fromarray(rgba, 'RGBA')
         overlay.paste(patch, (x1i, y1i), patch)
 
@@ -200,25 +242,19 @@ def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
         return f"総評の生成に失敗しました: {e}"
 
 
-# --- エリア分割ロジック（食材エリア直接検出）---
-def find_vertical_divider(img_bgr, y1, y2, x1, x2):
-    """上段エリア内の縦仕切り線のX座標を検出する"""
-    h_roi = y2 - y1
-    w_roi = x2 - x1
-    roi = img_bgr[y1:y2, x1:x2]
-    tray = build_tray_mask(roi)
-    col_d = np.sum(tray > 0, axis=0) / h_roi
-    s = int(w_roi * 0.25)
-    e = int(w_roi * 0.55)
-    if e <= s:
-        return x1 + w_roi // 2
-    local_peak = int(np.argmax(col_d[s:e]))
-    return x1 + s + local_peak
+# --- エリア分割ロジック ---
+def build_tray_mask_rough(img_bgr: np.ndarray) -> np.ndarray:
+    """エリア検出用の赤色マスク（広めの HSV 範囲）"""
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    m1 = cv2.inRange(hsv, np.array([0,   60, 40]),  np.array([15,  255, 220]))
+    m2 = cv2.inRange(hsv, np.array([165, 60, 40]),  np.array([180, 255, 220]))
+    return cv2.bitwise_or(m1, m2)
+
 
 def detect_bento_areas(img_bgr: np.ndarray):
     h, w = img_bgr.shape[:2]
 
-    tray_mask = build_tray_mask(img_bgr)
+    tray_mask = build_tray_mask_rough(img_bgr)
     kernel = np.ones((20,20), np.uint8)
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_CLOSE, kernel)
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_OPEN, kernel)
@@ -335,7 +371,6 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list, area
             except:
                 pass
 
-    # 先に CV 検出したトレー露出ピクセルを黄色で可視化
     if area_masks:
         base = overlay_tray_mask(img_pil, areas, area_masks)
     else:
@@ -432,7 +467,8 @@ def delete_history_item(idx: int) -> bool:
 
 
 # --- セッション初期化 ---
-for key, val in [('last_processed_file', None), ('selected_idx', None), ('show_ref_upload', False)]:
+for key, val in [('last_processed_file', None), ('selected_idx', None),
+                 ('show_ref_upload', False), ('color_tolerance', 22.0)]:
     if key not in st.session_state:
         st.session_state[key] = val
 
@@ -462,7 +498,12 @@ with st.sidebar:
 
     ref_img = load_reference_image()
     if ref_img is not None:
-        st.markdown('<div class="ref-status-ok">✓ 空容器登録済</div>', unsafe_allow_html=True)
+        ref_stats = get_reference_tray_lab_current()
+        if ref_stats is not None:
+            lm = ref_stats["mean"]
+            st.markdown(f'<div class="ref-status-ok">✓ 空容器登録済 / LAB学習済<br><span style="font-size:0.65rem;opacity:.8;">L={lm[0]:.0f} A={lm[1]:.0f} B={lm[2]:.0f}</span></div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="ref-status-ng">✓ 登録済（色抽出失敗・HSVフォールバック）</div>', unsafe_allow_html=True)
         st.image(ref_img, use_container_width=True)
         col_re, col_del = st.columns(2)
         with col_re:
@@ -494,6 +535,16 @@ with st.sidebar:
                 st.rerun()
             except Exception as e:
                 st.error(f"登録失敗: {e}")
+
+    # --- 色許容度スライダー ---
+    st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:0.7rem; color:#888; letter-spacing:2px; margin-bottom:4px;">色許容度 (TOLERANCE)</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:0.68rem; color:#666; margin-bottom:6px;">小さい→厳密判定 / 大きい→甘い判定</div>', unsafe_allow_html=True)
+    st.session_state.color_tolerance = st.slider(
+        "tolerance", min_value=10.0, max_value=45.0,
+        value=float(st.session_state.color_tolerance), step=1.0,
+        label_visibility="collapsed"
+    )
 
     st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
 
@@ -588,6 +639,10 @@ else:
         img_orig = Image.open(up).convert("RGB")
         img_bgr  = cv2.cvtColor(np.array(img_orig), cv2.COLOR_RGB2BGR)
 
+        # リファレンスの LAB 統計をロード
+        ref_lab_stats = get_reference_tray_lab_current()
+        tolerance = float(st.session_state.color_tolerance)
+
         progress_bar.progress(10, text="トレーを検出中...")
         areas = detect_bento_areas(img_bgr)
 
@@ -614,7 +669,7 @@ else:
             x2c = max(x1c+1, min(int(x2), img_w))
             y2c = max(y1c+1, min(int(y2), img_h))
             roi = img_orig.crop((x1c, y1c, x2c, y2c))
-            analysis = compute_emptiness_cv(roi, name)
+            analysis = compute_emptiness_cv(roi, name, ref_lab_stats=ref_lab_stats, tolerance=tolerance)
             area_masks[name] = analysis.pop("tray_mask", None)
             results.append({
                 "name": name,
@@ -624,15 +679,14 @@ else:
             })
 
         progress_bar.progress(80, text="全体評価を生成中...")
-        # 平均・PASS判定はご飯除外
         target_results = [r for r in results if r["name"] != "下左（ごはん）"]
         avg_pct = np.mean([r["emptiness_pct"] for r in target_results]) if target_results else 0.0
 
         def area_passes(r):
             pct = r["emptiness_pct"]
             if "大おかず" in r["name"]:
-                return pct < 8.0   # 大おかずは厳格：8%未満でPASS
-            return pct < 20.0      # その他：20%未満でPASS
+                return pct < 8.0   # 大おかずは厳格
+            return pct < 20.0      # その他
 
         is_pass = avg_pct < 15.0 and all(area_passes(r) for r in target_results)
 
