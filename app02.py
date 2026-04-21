@@ -160,10 +160,15 @@ def compute_emptiness_cv(roi_pil: Image.Image, area_name: str,
     - リファレンス学習済 → LAB 色空間での距離ベース判定
     - 未学習 → HSV 範囲ベース判定（フォールバック）
 
-    小おかずエリア（カップが置かれる）では、カップ同士の間に必ず発生する
-    構造的な小ギャップを除外するため、食材マスクに対して MORPH_CLOSE を適用する。
+    食材同士の間に必ず発生する「構造的な隙間」は充填不足ではないので、
+    食材マスクに MORPH_CLOSE を適用して吸収する:
+      - 小おかず: カップ 2 個間の大きなギャップ向けに大きめカーネル
+      - 大おかず: 唐揚げ同士 / 天ぷらと唐揚げの間などの小〜中ギャップ向けに
+                  小さめカーネル
+    さらに 大おかずでは、トレー枠の内側 2% を除外して外縁の誤検出を抑える。
     """
     roi_bgr = cv2.cvtColor(np.array(roi_pil), cv2.COLOR_RGB2BGR)
+    h_roi, w_roi = roi_bgr.shape[:2]
 
     if ref_lab_stats is not None:
         roi_lab = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -183,10 +188,16 @@ def compute_emptiness_cv(roi_pil: Image.Image, area_name: str,
     kernel_small = np.ones((3, 3), np.uint8)
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_OPEN, kernel_small)
 
-    # --- 小おかずエリア専用: カップ間の構造ギャップを吸収 ---
+    # --- 構造ギャップを埋める MORPH_CLOSE ---
     if "小おかず" in area_name:
-        h_roi, w_roi = tray_mask.shape[:2]
         bridge_size = max(25, int(min(h_roi, w_roi) * 0.15))
+    elif "大おかず" in area_name:
+        # 食材間の小さめギャップ（唐揚げ同士、天ぷら⇔唐揚げ間の green 葉など）
+        bridge_size = max(17, int(min(h_roi, w_roi) * 0.08))
+    else:
+        bridge_size = 0
+
+    if bridge_size > 0:
         if bridge_size % 2 == 0:
             bridge_size += 1
         food_mask = cv2.bitwise_not(tray_mask)
@@ -194,7 +205,19 @@ def compute_emptiness_cv(roi_pil: Image.Image, area_name: str,
         food_bridged = cv2.morphologyEx(food_mask, cv2.MORPH_CLOSE, kernel_bridge)
         tray_mask = cv2.bitwise_not(food_bridged)
 
+    # --- 大おかず: トレー枠際 2% をカウント対象外にする（分子・分母とも）---
     total_px = tray_mask.size
+    if "大おかず" in area_name:
+        pad_x = max(2, int(w_roi * 0.02))
+        pad_y = max(2, int(h_roi * 0.02))
+        tray_mask[:pad_y, :] = 0
+        tray_mask[-pad_y:, :] = 0
+        tray_mask[:, :pad_x] = 0
+        tray_mask[:, -pad_x:] = 0
+        inner_w = max(1, w_roi - 2 * pad_x)
+        inner_h = max(1, h_roi - 2 * pad_y)
+        total_px = inner_w * inner_h
+
     tray_px = int(np.sum(tray_mask > 0))
     pct = (tray_px / total_px * 100.0) if total_px > 0 else 0.0
     pct = max(pct, 0.0)
