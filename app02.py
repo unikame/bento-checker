@@ -276,20 +276,139 @@ def build_tray_mask_rough(img_bgr: np.ndarray) -> np.ndarray:
     return cv2.bitwise_or(m1, m2)
 
 
-def detect_bento_areas(img_bgr: np.ndarray):
+def _fallback_areas(w: int, h: int) -> dict:
+    """全ての検出が失敗した場合の固定比率フォールバック"""
+    y1          = int(h * 0.10)
+    h_split     = int(h * 0.46)
+    x1_top      = int(w * 0.10)
+    x2_top      = int(w * 0.92)
+    v_top       = int(w * 0.36)
+    h_split_bot = int(h * 0.50)
+    y2          = int(h * 0.92)
+    x2_bot      = int(w * 0.92)
+    v_bot       = int(w * 0.63)
+    return {
+        "上左（小おかず）": (y1,          h_split,     x1_top, v_top),
+        "上右（大おかず）": (y1,          h_split,     v_top,  x2_top),
+        "下右（小おかず）": (h_split_bot, y2,          v_bot,  x2_bot),
+    }
+
+
+def detect_bento_areas(img_bgr: np.ndarray) -> dict:
+    """
+    標準的なお弁当レイアウト（上段=小・大、下段=ごはん・小）を想定して
+    3 エリアを返す。
+
+    アプローチ:
+      1. トレー全体の外周 bbox を検出
+      2. トレー内の「ごはん」領域 (大きな白〜薄色領域) を検出
+      3. ごはんの上端を上下段の境界、ごはんの右端を下段の左右境界に使う
+      4. 上段の左右分割点は、上段内の食材輪郭位置から推定
+      5. どこかで失敗したら従来の輪郭ベース/固定比率にフォールバック
+    """
     h, w = img_bgr.shape[:2]
 
-    tray_mask = build_tray_mask_rough(img_bgr)
-    kernel = np.ones((20,20), np.uint8)
-    tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_CLOSE, kernel)
-    tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_OPEN, kernel)
+    # Step 1: トレー全体 bbox
+    tray_mask_rough = build_tray_mask_rough(img_bgr)
+    kernel_big = np.ones((25, 25), np.uint8)
+    tray_closed = cv2.morphologyEx(tray_mask_rough, cv2.MORPH_CLOSE, kernel_big)
+    tray_closed = cv2.morphologyEx(tray_closed, cv2.MORPH_OPEN, kernel_big)
 
-    contours, _ = cv2.findContours(tray_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    tray_contours, _ = cv2.findContours(tray_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not tray_contours:
+        return _fallback_areas(w, h)
+
+    tray_c = max(tray_contours, key=cv2.contourArea)
+    if cv2.contourArea(tray_c) < w * h * 0.15:
+        return _fallback_areas(w, h)
+
+    tx, ty, tw, th = cv2.boundingRect(tray_c)
+
+    inside_tray = np.zeros_like(tray_closed)
+    cv2.drawContours(inside_tray, [tray_c], -1, 255, -1)
+
+    # Step 2: ごはん領域検出 (下半分の大きな白っぽい領域)
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    rice_mask = cv2.inRange(hsv, np.array([0, 0, 120]), np.array([180, 75, 255]))
+    rice_mask = cv2.bitwise_and(rice_mask, inside_tray)
+
+    bottom_region = np.zeros_like(rice_mask)
+    y_start = ty + int(th * 0.35)
+    bottom_region[y_start: ty + th, tx: tx + tw] = 255
+    rice_mask = cv2.bitwise_and(rice_mask, bottom_region)
+
+    rk = np.ones((15, 15), np.uint8)
+    rice_mask = cv2.morphologyEx(rice_mask, cv2.MORPH_CLOSE, rk)
+    rice_mask = cv2.morphologyEx(rice_mask, cv2.MORPH_OPEN, rk)
+
+    rice_contours, _ = cv2.findContours(rice_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    rice_contours = [c for c in rice_contours if cv2.contourArea(c) > tw * th * 0.06]
+
+    if rice_contours:
+        rice = max(rice_contours, key=cv2.contourArea)
+        rx, ry, rw, rh = cv2.boundingRect(rice)
+
+        inset = max(2, int(min(tw, th) * 0.015))
+
+        # 上下段の y 境界
+        up_y1 = ty + inset
+        up_y2 = ry
+        lo_y1 = ry
+        lo_y2 = ty + th - inset
+
+        # Step 3: 上段の左右分割点
+        split_x = tx + int(tw * 0.37)  # 既定値
+
+        # 上段内の食材輪郭を見つけて分割点を推定
+        food_mask_full = cv2.bitwise_and(inside_tray, cv2.bitwise_not(tray_mask_rough))
+        upper_food = food_mask_full.copy()
+        upper_food[:up_y1, :] = 0
+        upper_food[up_y2:, :] = 0
+        upper_food[:, :tx] = 0
+        upper_food[:, tx + tw:] = 0
+        uk = np.ones((9, 9), np.uint8)
+        upper_food = cv2.morphologyEx(upper_food, cv2.MORPH_OPEN, uk)
+
+        uc, _ = cv2.findContours(upper_food, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        uc_bbox = [cv2.boundingRect(c) for c in uc if cv2.contourArea(c) > tw * th * 0.012]
+        if len(uc_bbox) >= 2:
+            # 左端 bbox (cx が最小) とそれ以外の最も近い bbox の境界から split を推定
+            uc_bbox_sorted = sorted(uc_bbox, key=lambda b: b[0] + b[2] / 2)
+            leftmost = uc_bbox_sorted[0]
+            second   = uc_bbox_sorted[1]
+            # 左端 bbox の右端 と 2 番目 bbox の左端 の中点
+            left_right_edge = leftmost[0] + leftmost[2]
+            second_left_edge = second[0]
+            candidate = (left_right_edge + second_left_edge) / 2
+            low_lim  = tx + tw * 0.22
+            high_lim = tx + tw * 0.50
+            split_x = int(max(low_lim, min(high_lim, candidate)))
+
+        # Step 4: 下右エリア (ごはん右端〜トレー右端)
+        lr_x1 = rx + rw
+        lr_x2 = tx + tw - inset
+        if lr_x2 - lr_x1 < tw * 0.15:
+            # ごはんが右端まで届いている → 既定比率に戻す
+            lr_x1 = tx + int(tw * 0.63)
+            lr_x2 = tx + tw - inset
+
+        return {
+            "上左（小おかず）": (int(up_y1), int(up_y2), int(tx + inset), int(split_x)),
+            "上右（大おかず）": (int(up_y1), int(up_y2), int(split_x),    int(tx + tw - inset)),
+            "下右（小おかず）": (int(lo_y1), int(lo_y2), int(lr_x1),      int(lr_x2)),
+        }
+
+    # --- ごはん検出失敗: 輪郭ベースのフォールバック ---
+    kernel = np.ones((20, 20), np.uint8)
+    tm = cv2.morphologyEx(tray_mask_rough, cv2.MORPH_CLOSE, kernel)
+    tm = cv2.morphologyEx(tm, cv2.MORPH_OPEN, kernel)
+
+    contours, _ = cv2.findContours(tm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
         contours = sorted(contours, key=cv2.contourArea, reverse=True)
-        filled = np.zeros_like(tray_mask)
+        filled = np.zeros_like(tm)
         cv2.drawContours(filled, [contours[0]], -1, 255, -1)
-        food_mask = cv2.bitwise_and(filled, cv2.bitwise_not(tray_mask))
+        food_mask = cv2.bitwise_and(filled, cv2.bitwise_not(tm))
         food_contours, _ = cv2.findContours(food_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         min_area = h * w * 0.03
         food_contours = [c for c in food_contours if cv2.contourArea(c) > min_area]
@@ -299,7 +418,8 @@ def detect_bento_areas(img_bgr: np.ndarray):
             boxes = []
             for c in food_contours:
                 fx, fy, fw, fh = cv2.boundingRect(c)
-                boxes.append({'x1':fx,'y1':fy,'x2':fx+fw,'y2':fy+fh,'cx':fx+fw/2,'cy':fy+fh/2})
+                boxes.append({'x1': fx, 'y1': fy, 'x2': fx + fw, 'y2': fy + fh,
+                              'cx': fx + fw / 2, 'cy': fy + fh / 2})
             cy_med = np.median([b['cy'] for b in boxes])
             top = sorted([b for b in boxes if b['cy'] < cy_med], key=lambda b: b['cx'])
             bot = sorted([b for b in boxes if b['cy'] >= cy_med], key=lambda b: b['cx'])
@@ -311,67 +431,7 @@ def detect_bento_areas(img_bgr: np.ndarray):
                     "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
                 }
 
-        if len(food_contours) == 3:
-            boxes = []
-            for c in food_contours:
-                fx, fy, fw, fh = cv2.boundingRect(c)
-                area = cv2.contourArea(c)
-                boxes.append({'x1':fx,'y1':fy,'x2':fx+fw,'y2':fy+fh,'cx':fx+fw/2,'cy':fy+fh/2,'area':area})
-
-            rice = max(boxes, key=lambda b: b['area'])
-            rest = [b for b in boxes if b != rice]
-
-            tl = tr = br = None
-            for b in rest:
-                cx_r = b['cx'] / w
-                cy_r = b['cy'] / h
-                if cy_r < 0.5 and cx_r < 0.5:
-                    tl = b
-                elif cy_r < 0.5:
-                    tr = b
-                else:
-                    br = b
-
-            top_y1 = (tl or tr)['y1'] if (tl or tr) else int(h * 0.06)
-            top_y2 = (tl or tr)['y2'] if (tl or tr) else int(h * 0.46)
-            bot_y1 = rice['y1']
-            bot_y2 = rice['y2']
-
-            if tl is None and tr is not None:
-                tl = {'y1': top_y1, 'y2': top_y2, 'x1': rice['x1'], 'x2': tr['x1']}
-
-            if br is None:
-                br_x1 = rice['x2']
-                br_x2 = (tr or tl)['x2'] if (tr or tl) else int(w * 0.90)
-                br = {'y1': bot_y1, 'y2': bot_y2, 'x1': br_x1, 'x2': br_x2}
-
-            if tr is None and tl is not None:
-                tr = {'y1': top_y1, 'y2': top_y2, 'x1': tl['x2'], 'x2': br['x2']}
-
-            if tl and tr and br:
-                def safe(v): return int(v) if v is not None else 0
-                return {
-                    "上左（小おかず）": (safe(tl['y1']), safe(tl['y2']), safe(tl['x1']), safe(tl['x2'])),
-                    "上右（大おかず）": (safe(tr['y1']), safe(tr['y2']), safe(tr['x1']), safe(br['x2'])),
-                    "下右（小おかず）": (safe(br['y1']), safe(br['y2']), safe(br['x1']), safe(br['x2'])),
-                }
-
-    # フォールバック（固定比率）
-    y1          = int(h * 0.10)
-    h_split     = int(h * 0.46)
-    x1_top      = int(w * 0.10)
-    x2_top      = int(w * 0.92)
-    v_top       = int(w * 0.36)
-    h_split_bot = int(h * 0.50)
-    y2          = int(h * 0.92)
-    x1_bot      = int(w * 0.13)
-    x2_bot      = int(w * 0.92)
-    v_bot       = int(w * 0.63)
-    return {
-        "上左（小おかず）": (y1,          h_split,     x1_top, v_top),
-        "上右（大おかず）": (y1,          h_split,     v_top,  x2_top),
-        "下右（小おかず）": (h_split_bot, y2,          v_bot,  x2_bot),
-    }
+    return _fallback_areas(w, h)
 
 
 # --- 判定閾値 ---
