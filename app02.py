@@ -15,6 +15,7 @@ st.set_page_config(page_title="Bento Checker Pro", layout="wide", page_icon="�
 
 DB_FILE = "shared_history.csv"
 SAVE_DIR = "history_images"
+REFERENCE_FILE = "reference_empty.jpg"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 # --- スタイル ---
@@ -45,6 +46,8 @@ div[data-testid="stFileUploader"] { background: white; border: 2px dashed #d0ccc
 [data-testid="stSidebar"] .stButton button { background: #2a2a2a; border: 1px solid #3a3a3a; color: #f0ede8; border-radius: 10px; font-size: 0.8rem; }
 [data-testid="stSidebar"] .stButton button:hover { background: #3a3a3a; border-color: #555; }
 .new-scan-btn button { background: #f0ede8 !important; color: #1a1a1a !important; font-family: 'Space Mono', monospace !important; font-weight: 700 !important; border-radius: 10px !important; border: none !important; }
+.ref-status-ok { background: #1f3a2a; color: #7fdba0 !important; padding: 8px 12px; border-radius: 8px; font-size: 0.75rem; }
+.ref-status-ng { background: #3a2a1f; color: #e0a070 !important; padding: 8px 12px; border-radius: 8px; font-size: 0.75rem; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -66,93 +69,184 @@ def pil_to_base64(img: Image.Image, fmt="JPEG") -> str:
     return base64.standard_b64encode(buf.getvalue()).decode("utf-8")
 
 
-
-# --- Claude Vision による充填率判定 ---
-def analyze_area_with_claude(client, area_img: Image.Image, area_name: str) -> dict:
-    b64 = pil_to_base64(area_img)
-
-    # 大おかずエリアは食材間の隙間も空きとしてカウントする厳格モード
-    if "大おかず" in area_name:
-        area_rules = """
-【大おかずエリア専用ルール】
-このエリアはカップなしで食材が直置きされています。厳格に判定してください。
-
-追加ルール：
-- ハンバーグ・コロッケ・卵焼きなど個別の食材の「間」に見えるトレー底面 → 空き
-- 食材が2〜3個並んでいる場合、それらの隙間を全て合算して空き率に含める
-- 食材の「下」や「内部」は埋まりだが、食材と食材の「間の空間」は空き
-- 少しでも隙間が見えれば積極的に空きとしてカウントすること
-
-目安スケール（大おかず専用・厳格版）：
-- 食材がすき間なくぴったり詰まっている → 3〜6%
-- 食材間にわずかな隙間が見える → 8〜15%
-- 食材間に明確な隙間がある → 15〜25%
-- 食材が少なく空きが目立つ → 25%以上"""
-    else:
-        area_rules = """
-目安スケール：
-- ほぼ完全に埋まっている（食材がぎっしり）→ 2〜8%
-- 少し隙間がある → 8〜20%
-- 明らかに空きがある → 20〜40%
-- 半分以上空き → 40%以上"""
-
-    prompt = f"""お弁当の品質検査をしてください。画像は「{area_name}」エリアです。
-
-このエリアの「空き率」を計算してください。
-
-空き率の定義：
-- 空き = トレーの赤茶色の底面（菱形模様）が直接見えている部分
-- 埋まり = 食材・カップ・仕切り紙で覆われている部分
-
-基本判定ルール：
-1. 食材（野菜・肉・卵・漬物・豆など）がある → 埋まり
-2. カップ（紙カップ）がある → カップ自体もその周囲も埋まり
-3. トレー底面が広く露出している → 空き
-{area_rules}
-
-重要：絶対に0.0%は返さないでください。最低でも2%以上を返すこと。
-
-空き率 = 空きの面積 ÷ エリア全体の面積 × 100
-小数点1桁で回答（例：3.2、8.7、17.4）。5の倍数に丸めないでください。
-
-JSON形式のみで回答：
-{{"emptiness_pct": 数値, "confidence": "high/medium/low", "reason": "判断理由を20字以内"}}"""
-
+# --- 座標クランプ ヘルパー ---
+def clamp_rect(y1, y2, x1, x2, w: int, h: int):
+    """座標を [0, w-1] × [0, h-1] にクランプ。退化した矩形は None を返す。"""
     try:
-        msg = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=256,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-                    {"type": "text", "text": prompt},
-                ]
-            }]
-        )
-        raw = msg.content[0].text.strip()
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        data = json.loads(raw[start:end])
-        reason = data.get("reason", "")
-        pct = float(data.get("emptiness_pct", 50))
-        print(f"[RESULT] {area_name}: {pct}% - {reason}")
-        return {
-            "emptiness_pct": pct,
-            "confidence": data.get("confidence", "medium"),
-            "reason": reason
-        }
-    except Exception as e:
-        import traceback
-        print(f"[API ERROR] {area_name}: {type(e).__name__}: {e}")
-        traceback.print_exc()
-        return {"emptiness_pct": 50.0, "confidence": "low", "reason": f"エラー: {str(e)[:20]}"}
+        x1i = max(0, min(int(x1), w - 1))
+        y1i = max(0, min(int(y1), h - 1))
+        x2i = max(0, min(int(x2), w - 1))
+        y2i = max(0, min(int(y2), h - 1))
+    except (TypeError, ValueError):
+        return None
+    if x2i <= x1i or y2i <= y1i:
+        return None
+    return x1i, y1i, x2i, y2i
 
 
+# --- リファレンス画像の管理 ---
+def load_reference_image():
+    if os.path.exists(REFERENCE_FILE):
+        try:
+            return Image.open(REFERENCE_FILE).convert("RGB")
+        except Exception:
+            return None
+    return None
+
+
+def save_reference_image(img_pil: Image.Image):
+    max_side = 1600
+    w, h = img_pil.size
+    if max(w, h) > max_side:
+        scale = max_side / max(w, h)
+        img_pil = img_pil.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+    img_pil.save(REFERENCE_FILE, quality=92)
+
+
+def delete_reference_image():
+    if os.path.exists(REFERENCE_FILE):
+        try:
+            os.remove(REFERENCE_FILE)
+        except Exception:
+            pass
+
+
+# --- トレー色のリファレンス学習 (LAB 色空間) ---
+@st.cache_data(show_spinner=False)
+def get_reference_tray_lab(ref_mtime: float):
+    """リファレンス画像から「トレー底面色」の LAB 平均値と分散を学習する。
+    ref_mtime は cache 無効化用（ファイルが更新されると自動再計算）。"""
+    ref_img = load_reference_image()
+    if ref_img is None:
+        return None
+    ref_bgr = cv2.cvtColor(np.array(ref_img), cv2.COLOR_RGB2BGR)
+    ref_lab = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2LAB)
+
+    ref_hsv = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2HSV)
+    m1 = cv2.inRange(ref_hsv, np.array([0, 60, 30]), np.array([15, 255, 230]))
+    m2 = cv2.inRange(ref_hsv, np.array([165, 60, 30]), np.array([180, 255, 230]))
+    tray_candidate = cv2.bitwise_or(m1, m2)
+
+    kernel = np.ones((5, 5), np.uint8)
+    tray_candidate = cv2.morphologyEx(tray_candidate, cv2.MORPH_OPEN, kernel)
+
+    if np.sum(tray_candidate > 0) < 1000:
+        return None
+
+    lab_pixels = ref_lab[tray_candidate > 0]
+    lab_mean = np.mean(lab_pixels, axis=0).astype(np.float32)
+    lab_std = np.std(lab_pixels, axis=0).astype(np.float32)
+    return {
+        "mean": tuple(float(x) for x in lab_mean),
+        "std": tuple(float(x) for x in lab_std),
+    }
+
+
+def get_reference_tray_lab_current():
+    """現在のリファレンスファイルから LAB 統計値を取得（mtime でキャッシュ）"""
+    if not os.path.exists(REFERENCE_FILE):
+        return None
+    mtime = os.path.getmtime(REFERENCE_FILE)
+    return get_reference_tray_lab(mtime)
+
+
+# --- 空き率計算（OpenCV ベース）---
+def compute_emptiness_cv(roi_pil: Image.Image, area_name: str,
+                         ref_lab_stats: dict = None,
+                         tolerance: float = 25.0) -> dict:
+    """
+    ROI 内で「トレー色（赤い菱形模様）」のピクセル比率を計算。
+
+    - リファレンス学習済 → LAB 色空間での距離ベース判定
+    - 未学習 → HSV 範囲ベース判定（フォールバック）
+
+    小おかずエリア（カップが置かれる）では、カップ同士の間に必ず発生する
+    構造的な小ギャップを除外するため、食材マスクに対して MORPH_CLOSE を適用する。
+    """
+    roi_bgr = cv2.cvtColor(np.array(roi_pil), cv2.COLOR_RGB2BGR)
+
+    if ref_lab_stats is not None:
+        roi_lab = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
+        ref_mean = np.array(ref_lab_stats["mean"], dtype=np.float32)
+        diff = roi_lab - ref_mean
+        weights = np.array([0.5, 1.2, 1.2], dtype=np.float32)
+        weighted = diff * weights
+        dist = np.sqrt(np.sum(weighted * weighted, axis=2))
+        tray_mask = (dist < tolerance).astype(np.uint8) * 255
+    else:
+        hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
+        m1 = cv2.inRange(hsv, np.array([0, 90, 50]),   np.array([12, 230, 180]))
+        m2 = cv2.inRange(hsv, np.array([168, 90, 50]), np.array([180, 230, 180]))
+        tray_mask = cv2.bitwise_or(m1, m2)
+
+    # 小さな孤立ノイズ除去
+    kernel_small = np.ones((3, 3), np.uint8)
+    tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_OPEN, kernel_small)
+
+    # --- 小おかずエリア専用: カップ間の構造ギャップを吸収 ---
+    if "小おかず" in area_name:
+        h_roi, w_roi = tray_mask.shape[:2]
+        bridge_size = max(25, int(min(h_roi, w_roi) * 0.15))
+        if bridge_size % 2 == 0:
+            bridge_size += 1
+        food_mask = cv2.bitwise_not(tray_mask)
+        kernel_bridge = np.ones((bridge_size, bridge_size), np.uint8)
+        food_bridged = cv2.morphologyEx(food_mask, cv2.MORPH_CLOSE, kernel_bridge)
+        tray_mask = cv2.bitwise_not(food_bridged)
+
+    total_px = tray_mask.size
+    tray_px = int(np.sum(tray_mask > 0))
+    pct = (tray_px / total_px * 100.0) if total_px > 0 else 0.0
+    pct = max(pct, 0.0)
+
+    return {
+        "emptiness_pct": round(pct, 1),
+        "confidence": "high",
+        "reason": f"CV検出 {tray_px:,}/{total_px:,}px",
+        "tray_mask": tray_mask,
+    }
+
+
+def overlay_tray_mask(img_pil: Image.Image, areas: dict, area_masks: dict) -> Image.Image:
+    """検出された空き（トレー露出）ピクセルを黄色で可視化する"""
+    w, h = img_pil.size
+    output = img_pil.convert('RGBA')
+    overlay = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+
+    for name, (y1, y2, x1, x2) in areas.items():
+        if name == "下左（ごはん）":
+            continue
+        mask = area_masks.get(name)
+        if mask is None:
+            continue
+        clamped = clamp_rect(y1, y2, x1, x2, w, h)
+        if clamped is None:
+            continue
+        x1i, y1i, x2i, y2i = clamped
+        area_w = x2i - x1i
+        area_h = y2i - y1i
+        mh, mw = mask.shape[:2]
+        if (mw, mh) != (area_w, area_h):
+            try:
+                mask = cv2.resize(mask, (area_w, area_h), interpolation=cv2.INTER_NEAREST)
+            except Exception:
+                continue
+        rgba = np.zeros((area_h, area_w, 4), dtype=np.uint8)
+        rgba[mask > 0] = [255, 230, 0, 170]
+        patch = Image.fromarray(rgba, 'RGBA')
+        overlay.paste(patch, (x1i, y1i), patch)
+
+    return Image.alpha_composite(output, overlay).convert('RGB')
+
+
+# --- AI 総評（全体コメント用のみ Claude を使用）---
 def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
     summary = "\n".join([f"- {r['name']}: 空き率{r['emptiness_pct']:.1f}%" for r in results])
-    prompt = f"""お弁当の品質検査結果です：
+    prompt = f"""お弁当の品質検査結果です（画像処理で計算された空き率）：
 {summary}
+
+※空き率は、各エリア内で「トレーの赤い底面が露出しているピクセル比率」を画像処理で算出した客観値です。
+※判定基準：大おかずエリアは15%以上で NG、小おかずエリアは20%以上で NG。
 
 品質検査員として充填状況の総評を日本語で2〜3文で述べてください。改善が必要な点があれば具体的に指摘してください。"""
     b64 = pil_to_base64(img)
@@ -173,32 +267,19 @@ def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
         return f"総評の生成に失敗しました: {e}"
 
 
-# --- エリア分割ロジック（食材エリア直接検出）---
-def find_vertical_divider(img_bgr, y1, y2, x1, x2):
-    """上段エリア内の縦仕切り線のX座標を検出する"""
-    h_roi = y2 - y1
-    w_roi = x2 - x1
-    roi = img_bgr[y1:y2, x1:x2]
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    t1 = cv2.inRange(hsv, np.array([0,  60, 40]),  np.array([15, 255, 180]))
-    t2 = cv2.inRange(hsv, np.array([165,60, 40]),  np.array([180,255, 180]))
-    tray = cv2.bitwise_or(t1, t2)
-    col_d = np.sum(tray > 0, axis=0) / h_roi
-    # x=25%〜55%の範囲で最大密度の列を仕切りとする
-    s = int(w_roi * 0.25)
-    e = int(w_roi * 0.55)
-    if e <= s:
-        return x1 + w_roi // 2
-    local_peak = int(np.argmax(col_d[s:e]))
-    return x1 + s + local_peak
+# --- エリア分割ロジック ---
+def build_tray_mask_rough(img_bgr: np.ndarray) -> np.ndarray:
+    """エリア検出用の赤色マスク（広めの HSV 範囲）"""
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    m1 = cv2.inRange(hsv, np.array([0,   60, 40]),  np.array([15,  255, 220]))
+    m2 = cv2.inRange(hsv, np.array([165, 60, 40]),  np.array([180, 255, 220]))
+    return cv2.bitwise_or(m1, m2)
+
 
 def detect_bento_areas(img_bgr: np.ndarray):
     h, w = img_bgr.shape[:2]
 
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    tray1 = cv2.inRange(hsv, np.array([0,  60, 40]),  np.array([15, 255, 180]))
-    tray2 = cv2.inRange(hsv, np.array([165,60, 40]),  np.array([180,255, 180]))
-    tray_mask = cv2.bitwise_or(tray1, tray2)
+    tray_mask = build_tray_mask_rough(img_bgr)
     kernel = np.ones((20,20), np.uint8)
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_CLOSE, kernel)
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_OPEN, kernel)
@@ -214,7 +295,6 @@ def detect_bento_areas(img_bgr: np.ndarray):
         food_contours = [c for c in food_contours if cv2.contourArea(c) > min_area]
         food_contours = sorted(food_contours, key=cv2.contourArea, reverse=True)[:4]
 
-        # 4エリア検出成功
         if len(food_contours) == 4:
             boxes = []
             for c in food_contours:
@@ -231,7 +311,6 @@ def detect_bento_areas(img_bgr: np.ndarray):
                     "下右（小おかず）": (br['y1'], br['y2'], br['x1'], br['x2']),
                 }
 
-        # 3エリア検出：欠けているエリアを補完
         if len(food_contours) == 3:
             boxes = []
             for c in food_contours:
@@ -239,40 +318,33 @@ def detect_bento_areas(img_bgr: np.ndarray):
                 area = cv2.contourArea(c)
                 boxes.append({'x1':fx,'y1':fy,'x2':fx+fw,'y2':fy+fh,'cx':fx+fw/2,'cy':fy+fh/2,'area':area})
 
-            # ごはん = 最大面積
             rice = max(boxes, key=lambda b: b['area'])
             rest = [b for b in boxes if b != rice]
 
-            # x・y座標で分類
             tl = tr = br = None
             for b in rest:
                 cx_r = b['cx'] / w
                 cy_r = b['cy'] / h
                 if cy_r < 0.5 and cx_r < 0.5:
-                    tl = b  # 上左
+                    tl = b
                 elif cy_r < 0.5:
-                    tr = b  # 上右
+                    tr = b
                 else:
-                    br = b  # 下右
+                    br = b
 
-            # ごはんの位置を参考に上段y範囲・右端を補完
-            rice_x2 = rice['x2']
             top_y1 = (tl or tr)['y1'] if (tl or tr) else int(h * 0.06)
             top_y2 = (tl or tr)['y2'] if (tl or tr) else int(h * 0.46)
             bot_y1 = rice['y1']
             bot_y2 = rice['y2']
 
-            # 上左が未検出→上右のx1より左を上左として補完
             if tl is None and tr is not None:
                 tl = {'y1': top_y1, 'y2': top_y2, 'x1': rice['x1'], 'x2': tr['x1']}
 
-            # 下右が未検出→ごはんのx2より右を下右として補完
             if br is None:
                 br_x1 = rice['x2']
                 br_x2 = (tr or tl)['x2'] if (tr or tl) else int(w * 0.90)
                 br = {'y1': bot_y1, 'y2': bot_y2, 'x1': br_x1, 'x2': br_x2}
 
-            # 上右が未検出→上左のx2から右端まで
             if tr is None and tl is not None:
                 tr = {'y1': top_y1, 'y2': top_y2, 'x1': tl['x2'], 'x2': br['x2']}
 
@@ -302,7 +374,24 @@ def detect_bento_areas(img_bgr: np.ndarray):
     }
 
 
-def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> Image.Image:
+# --- 判定閾値 ---
+THRESHOLD_OOKAZU = 15.0   # 大おかず: 15%以上で NG
+THRESHOLD_KOOKAZU = 20.0  # 小おかず: 20%以上で NG
+
+
+def pct_color(pct: float, area_name: str) -> tuple:
+    """空き率に応じた色（RGBタプル）を返す"""
+    threshold = THRESHOLD_OOKAZU if "大おかず" in area_name else THRESHOLD_KOOKAZU
+    warn_zone = threshold * 0.7
+    if pct < warn_zone:
+        return (46, 204, 113)  # green
+    elif pct < threshold:
+        return (243, 156, 18)  # yellow
+    else:
+        return (231, 76, 60)   # red
+
+
+def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list, area_masks: dict = None) -> Image.Image:
     result_map = {r["name"]: r for r in results}
     w, h = img_pil.size
     font_size = max(20, int(w * 0.035))
@@ -322,67 +411,73 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list) -> I
             except:
                 pass
 
-    # 半透明オーバーレイを一括で作成
-    output = img_pil.convert('RGBA')
+    if area_masks:
+        base = overlay_tray_mask(img_pil, areas, area_masks)
+    else:
+        base = img_pil
+
+    output = base.convert('RGBA')
     overlay = Image.new('RGBA', (w, h), (0, 0, 0, 0))
     ov_draw = ImageDraw.Draw(overlay)
 
+    # 座標を事前にクランプして使い回す（2回目のループでも同じ値を使う）
+    clamped_areas = {}
     for name, (y1, y2, x1, x2) in areas.items():
         if name == "下左（ごはん）":
             continue
-        # 座標バリデーション
-        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-        x1, y1 = max(0, x1), max(0, y1)
-        x2, y2 = max(x1+1, min(x2, w)), max(y1+1, min(y2, h))
+        clamped = clamp_rect(y1, y2, x1, x2, w, h)
+        if clamped is None:
+            continue
+        clamped_areas[name] = clamped
+
+    # 半透明塗りつぶし（エリア全体）
+    for name, (x1, y1, x2, y2) in clamped_areas.items():
         r = result_map.get(name, {})
         pct = r.get("emptiness_pct", 0)
-        if pct < 15:
-            color = (46, 204, 113); alpha = 40
-        elif pct < 30:
-            color = (243, 156, 18); alpha = 50
-        else:
-            color = (231, 76, 60); alpha = 60
-        ov_draw.rectangle([x1, y1, x2, y2], fill=(*color, alpha))
+        color = pct_color(pct, name)
+        threshold = THRESHOLD_OOKAZU if "大おかず" in name else THRESHOLD_KOOKAZU
+        alpha = 30 if pct < threshold * 0.7 else (40 if pct < threshold else 50)
+        try:
+            ov_draw.rectangle([x1, y1, x2, y2], fill=(color[0], color[1], color[2], alpha))
+        except Exception as e:
+            print(f"[DRAW ERROR fill {name}] {e}")
 
     output = Image.alpha_composite(output, overlay).convert('RGB')
     draw = ImageDraw.Draw(output, 'RGBA')
 
     line_w = max(4, int(w * 0.005))
-    for name, (y1, y2, x1, x2) in areas.items():
-        if name == "下左（ごはん）":
-            continue
+    for name, (x1, y1, x2, y2) in clamped_areas.items():
         r = result_map.get(name, {})
         pct = r.get("emptiness_pct", 0)
-        if pct < 15:
-            color = (46, 204, 113)
-        elif pct < 30:
-            color = (243, 156, 18)
-        else:
-            color = (231, 76, 60)
+        color = pct_color(pct, name)
 
-        draw.rectangle([x1, y1, x2, y2], outline=(*color, 255), width=line_w)
+        try:
+            draw.rectangle([x1, y1, x2, y2], outline=(color[0], color[1], color[2], 255), width=line_w)
+        except Exception as e:
+            print(f"[DRAW ERROR outline {name}] {e}")
+            continue
 
-        # テキストをエリア中央に表示
         text = f"{pct:.1f}%"
         cx = (x1 + x2) // 2
         cy = (y1 + y2) // 2
-        # textbboxのオフセットを正確に考慮
         bbox = draw.textbbox((0, 0), text, font=font)
         bx0, by0, bx1, by1 = bbox
         tw = bx1 - bx0
         th = by1 - by0
-        # 描画位置：中央に合わせてオフセット補正
         tx = cx - tw // 2 - bx0
         ty = cy - th // 2 - by0
-        # 背景
         pad = max(14, int(font_size * 0.45))
-        draw.rectangle(
-            [cx - tw//2 - pad, cy - th//2 - pad,
-             cx + tw//2 + pad, cy + th//2 + pad],
-            fill=(0, 0, 0, 200)
-        )
-        # テキスト
-        draw.text((tx, ty), text, font=font, fill=(255, 255, 255, 255))
+
+        # テキスト背景（クランプして描画）
+        bg_x1 = max(0, min(cx - tw//2 - pad, w - 1))
+        bg_y1 = max(0, min(cy - th//2 - pad, h - 1))
+        bg_x2 = max(bg_x1 + 1, min(cx + tw//2 + pad, w - 1))
+        bg_y2 = max(bg_y1 + 1, min(cy + th//2 + pad, h - 1))
+        try:
+            draw.rectangle([bg_x1, bg_y1, bg_x2, bg_y2], fill=(0, 0, 0, 200))
+            draw.text((tx, ty), text, font=font, fill=(255, 255, 255, 255))
+        except Exception as e:
+            print(f"[DRAW ERROR text {name}] {e}")
 
     return output
 
@@ -420,7 +515,8 @@ def delete_history_item(idx: int) -> bool:
 
 
 # --- セッション初期化 ---
-for key, val in [('last_processed_file', None), ('selected_idx', None)]:
+for key, val in [('last_processed_file', None), ('selected_idx', None),
+                 ('show_ref_upload', False), ('color_tolerance', 25.0)]:
     if key not in st.session_state:
         st.session_state[key] = val
 
@@ -443,6 +539,68 @@ with st.sidebar:
             st.session_state.last_processed_file = None
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
+
+    # --- リファレンス画像（空容器）の管理 ---
+    st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:0.7rem; color:#888; letter-spacing:2px; margin-bottom:6px;">REFERENCE (空容器)</div>', unsafe_allow_html=True)
+
+    ref_img = load_reference_image()
+    if ref_img is not None:
+        ref_stats = get_reference_tray_lab_current()
+        if ref_stats is not None:
+            lm = ref_stats["mean"]
+            st.markdown(f'<div class="ref-status-ok">✓ 空容器登録済 / LAB学習済<br><span style="font-size:0.65rem;opacity:.8;">L={lm[0]:.0f} A={lm[1]:.0f} B={lm[2]:.0f}</span></div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="ref-status-ng">✓ 登録済（色抽出失敗・HSVフォールバック）</div>', unsafe_allow_html=True)
+        st.image(ref_img, use_container_width=True)
+        col_re, col_del = st.columns(2)
+        with col_re:
+            if st.button("更新", key="ref_update", use_container_width=True):
+                st.session_state.show_ref_upload = True
+                st.rerun()
+        with col_del:
+            if st.button("削除", key="ref_delete", use_container_width=True):
+                delete_reference_image()
+                st.session_state.show_ref_upload = False
+                st.rerun()
+    else:
+        st.markdown('<div class="ref-status-ng">未登録</div>', unsafe_allow_html=True)
+        st.session_state.show_ref_upload = True
+
+    if st.session_state.show_ref_upload:
+        ref_up = st.file_uploader(
+            "空容器の写真を登録",
+            type=['jpg', 'jpeg', 'png'],
+            key="ref_uploader",
+            help="食材を入れる前の空容器を撮影して登録してください"
+        )
+        if ref_up is not None:
+            try:
+                ref_pil = Image.open(ref_up).convert("RGB")
+                save_reference_image(ref_pil)
+                st.session_state.show_ref_upload = False
+                st.success("リファレンスを登録しました")
+                st.rerun()
+            except Exception as e:
+                st.error(f"登録失敗: {e}")
+
+    # --- 色許容度スライダー ---
+    st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:0.7rem; color:#888; letter-spacing:2px; margin-bottom:4px;">色許容度 (TOLERANCE)</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:0.68rem; color:#666; margin-bottom:6px;">小さい→厳密判定 / 大きい→甘い判定</div>', unsafe_allow_html=True)
+    st.session_state.color_tolerance = st.slider(
+        "tolerance", min_value=10.0, max_value=45.0,
+        value=float(st.session_state.color_tolerance), step=1.0,
+        label_visibility="collapsed"
+    )
+
+    # --- 判定閾値の表示 ---
+    st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
+    st.markdown(f'''<div style="font-size:0.7rem; color:#888; letter-spacing:2px; margin-bottom:6px;">判定閾値 (NG)</div>
+    <div style="font-size:0.78rem; color:#ccc; line-height:1.7;">
+      大おかず: <b>≥ {THRESHOLD_OOKAZU:.0f}%</b><br>
+      小おかず: <b>≥ {THRESHOLD_KOOKAZU:.0f}%</b>
+    </div>''', unsafe_allow_html=True)
 
     st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
 
@@ -472,7 +630,7 @@ with st.sidebar:
 # メイン画面
 # =====================
 st.markdown('<div class="title-block">🍱 Bento Checker Pro</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle-block">AI-Powered Filling Analysis</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle-block">CV-Based Filling Analysis</div>', unsafe_allow_html=True)
 
 client = get_anthropic_client()
 history = load_shared_history()
@@ -501,12 +659,17 @@ if st.session_state.selected_idx is not None and st.session_state.selected_idx <
         for part in detail_text.split(" / "):
             if ":" in part:
                 nm, pct_str = part.rsplit(":", 1)
-                # ご飯エリアは表示しない
                 if nm == "下左（ごはん）":
                     continue
                 try:
                     pct = float(pct_str.replace("%", ""))
-                    cls = "pass" if pct < 15 else ("warn" if pct < 30 else "fail")
+                    threshold = THRESHOLD_OOKAZU if "大おかず" in nm else THRESHOLD_KOOKAZU
+                    if pct < threshold * 0.7:
+                        cls = "pass"
+                    elif pct < threshold:
+                        cls = "warn"
+                    else:
+                        cls = "fail"
                     st.markdown(f'''<div class="metric-card {cls}">
                         <div class="metric-title">{nm}</div>
                         <div class="metric-value">{pct:.1f}%</div>
@@ -538,18 +701,21 @@ else:
         img_orig = Image.open(up).convert("RGB")
         img_bgr  = cv2.cvtColor(np.array(img_orig), cv2.COLOR_RGB2BGR)
 
+        ref_lab_stats = get_reference_tray_lab_current()
+        tolerance = float(st.session_state.color_tolerance)
+
         progress_bar.progress(10, text="トレーを検出中...")
         areas = detect_bento_areas(img_bgr)
 
         results = []
+        area_masks = {}
         total_areas = len(areas)
 
         for i, (name, (y1, y2, x1, x2)) in enumerate(areas.items()):
             progress_bar.progress(
-                20 + int(60 * i / total_areas),
-                text=f"Claude Vision で「{name}」を解析中... ({i+1}/{total_areas})"
+                20 + int(50 * i / total_areas),
+                text=f"画像処理で「{name}」を解析中... ({i+1}/{total_areas})"
             )
-            # ご飯エリアは計測対象外
             if name == "下左（ごはん）":
                 results.append({
                     "name": name,
@@ -558,14 +724,21 @@ else:
                     "reason": "計測対象外",
                 })
                 continue
-            # 座標バリデーション
             img_w, img_h = img_orig.size
-            x1c = max(0, min(int(x1), img_w-1))
-            y1c = max(0, min(int(y1), img_h-1))
-            x2c = max(x1c+1, min(int(x2), img_w))
-            y2c = max(y1c+1, min(int(y2), img_h))
+            clamped = clamp_rect(y1, y2, x1, x2, img_w, img_h)
+            if clamped is None:
+                # 無効な座標→計測不能
+                results.append({
+                    "name": name,
+                    "emptiness_pct": 0.0,
+                    "confidence": "low",
+                    "reason": "座標不正",
+                })
+                continue
+            x1c, y1c, x2c, y2c = clamped
             roi = img_orig.crop((x1c, y1c, x2c, y2c))
-            analysis = analyze_area_with_claude(client, roi, name)
+            analysis = compute_emptiness_cv(roi, name, ref_lab_stats=ref_lab_stats, tolerance=tolerance)
+            area_masks[name] = analysis.pop("tray_mask", None)
             results.append({
                 "name": name,
                 "emptiness_pct": analysis["emptiness_pct"],
@@ -573,22 +746,29 @@ else:
                 "reason": analysis["reason"],
             })
 
-        progress_bar.progress(85, text="全体評価を生成中...")
-        # 平均・PASS判定はご飯除外
+        progress_bar.progress(80, text="全体評価を生成中...")
         target_results = [r for r in results if r["name"] != "下左（ごはん）"]
         avg_pct = np.mean([r["emptiness_pct"] for r in target_results]) if target_results else 0.0
+
         def area_passes(r):
             pct = r["emptiness_pct"]
             if "大おかず" in r["name"]:
-                return pct < 8.0   # 大おかずは厳格：8%未満でPASS
-            return pct < 20.0      # その他：20%未満でPASS
+                return pct < THRESHOLD_OOKAZU
+            return pct < THRESHOLD_KOOKAZU
 
-        is_pass = avg_pct < 15.0 and all(area_passes(r) for r in target_results)
+        is_pass = all(area_passes(r) for r in target_results)
 
         ai_comment = analyze_overall_with_claude(client, img_orig, target_results)
 
         progress_bar.progress(92, text="結果を描画中...")
-        output_pil = draw_results_on_image(img_orig, areas, results)
+        try:
+            output_pil = draw_results_on_image(img_orig, areas, results, area_masks=area_masks)
+        except Exception as e:
+            # 描画に失敗しても処理は継続（元画像を保存）
+            print(f"[DRAW ERROR] {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            output_pil = img_orig
 
         path = f"{SAVE_DIR}/res_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
         output_pil.save(path, quality=92)
@@ -615,9 +795,9 @@ else:
             <div style="font-size: 3rem; margin-bottom: 16px;">📷</div>
             <div style="font-size: 0.9rem; line-height: 1.8;">
                 お弁当の写真をアップロードすると<br>
-                Claude Vision AI が各エリアの充填率を解析します<br><br>
+                画像処理で各エリアの空き率を解析します<br><br>
                 <span style="font-size:0.75rem; color:#ccc;">
-                ✓ エリア自動検出 &nbsp;|&nbsp; ✓ AI視覚判定 &nbsp;|&nbsp; ✓ 高精度解析
+                ✓ エリア自動検出 &nbsp;|&nbsp; ✓ トレー露出検出 &nbsp;|&nbsp; ✓ 決定的判定
                 </span>
             </div>
         </div>
