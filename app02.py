@@ -155,17 +155,17 @@ def compute_emptiness_cv(roi_pil: Image.Image, area_name: str,
                          ref_lab_stats: dict = None,
                          tolerance: float = 25.0) -> dict:
     """
-    ROI 内で「トレー色（赤い菱形模様）」のピクセル比率を計算。
+    ROI 内で「トレー色（赤い菱形模様）」のピクセル比率を計算する。
 
-    - リファレンス学習済 → LAB 色空間での距離ベース判定
-    - 未学習 → HSV 範囲ベース判定（フォールバック）
+    手順:
+      1. LAB 色距離（学習済）または HSV 範囲（未学習）で tray_mask を生成
+      2. 小さな孤立ノイズを MORPH_OPEN で除去
+      3. カップ内の食材同士に空く小さな構造ギャップのみ MORPH_CLOSE で吸収
+         （食材内部の隙間は埋め、カップ外の広い空きは残す）
+      4. コンパートメント壁（リム）を狭く除外
 
-    食材同士の間に必ず発生する「構造的な隙間」は充填不足ではないので、
-    食材マスクに MORPH_CLOSE を適用して吸収する:
-      - 小おかず: カップ 2 個間の大きなギャップ向けに大きめカーネル
-      - 大おかず: 唐揚げ同士 / 天ぷらと唐揚げの間などの小〜中ギャップ向けに
-                  小さめカーネル
-    さらに 大おかずでは、トレー枠の内側 2% を除外して外縁の誤検出を抑える。
+    小おかずと大おかずは構造が異なるため、パラメータを別々に調整。
+    過剰な平滑化は「本物の空き」を見逃すため、kernel サイズは控えめにする。
     """
     roi_bgr = cv2.cvtColor(np.array(roi_pil), cv2.COLOR_RGB2BGR)
     h_roi, w_roi = roi_bgr.shape[:2]
@@ -189,11 +189,13 @@ def compute_emptiness_cv(roi_pil: Image.Image, area_name: str,
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_OPEN, kernel_small)
 
     # --- 構造ギャップを埋める MORPH_CLOSE ---
+    # 控えめに設定する：本物の空きまで埋めないようにする
     if "小おかず" in area_name:
-        bridge_size = max(25, int(min(h_roi, w_roi) * 0.15))
+        # 小おかずはカップ 2 個の構造的ギャップが大きいので大きめ
+        bridge_size = max(21, int(min(h_roi, w_roi) * 0.12))
     elif "大おかず" in area_name:
-        # 食材間の小さめギャップ（唐揚げ同士、天ぷら⇔唐揚げ間の green 葉など）
-        bridge_size = max(17, int(min(h_roi, w_roi) * 0.08))
+        # 唐揚げ/天ぷら同士の隙間程度のみ吸収（過剰補正しない）
+        bridge_size = max(11, int(min(h_roi, w_roi) * 0.055))
     else:
         bridge_size = 0
 
@@ -205,17 +207,19 @@ def compute_emptiness_cv(roi_pil: Image.Image, area_name: str,
         food_bridged = cv2.morphologyEx(food_mask, cv2.MORPH_CLOSE, kernel_bridge)
         tray_mask = cv2.bitwise_not(food_bridged)
 
-    # --- 大おかず: トレー枠際 2% をカウント対象外にする（分子・分母とも）---
+    # --- 大おかず: 容器リム（コンパートメント壁）を狭く除外 ---
+    # リムは細いので最小限だけ削り、本来の空き判定に影響させない
     total_px = tray_mask.size
     if "大おかず" in area_name:
-        pad_x = max(2, int(w_roi * 0.02))
-        pad_y = max(2, int(h_roi * 0.02))
-        tray_mask[:pad_y, :] = 0
-        tray_mask[-pad_y:, :] = 0
+        pad_x     = max(3, int(w_roi * 0.025))
+        pad_y_top = max(4, int(h_roi * 0.035))
+        pad_y_bot = max(3, int(h_roi * 0.025))
+        tray_mask[:pad_y_top, :] = 0
+        tray_mask[-pad_y_bot:, :] = 0
         tray_mask[:, :pad_x] = 0
         tray_mask[:, -pad_x:] = 0
         inner_w = max(1, w_roi - 2 * pad_x)
-        inner_h = max(1, h_roi - 2 * pad_y)
+        inner_h = max(1, h_roi - pad_y_top - pad_y_bot)
         total_px = inner_w * inner_h
 
     tray_px = int(np.sum(tray_mask > 0))
@@ -322,11 +326,19 @@ def detect_bento_areas(img_bgr: np.ndarray) -> dict:
     標準的なお弁当レイアウト（上段=小・大、下段=ごはん・小）を想定して
     3 エリアを返す。
 
+    レイアウト前提:
+      ┌──────────────┬───────────────────┐
+      │ 上左 小おかず │ 上右 大おかず      │
+      ├──────────────┴────────┬──────────┤
+      │ 下左 ごはん            │ 下右 小  │
+      └───────────────────────┴──────────┘
+
     アプローチ:
       1. トレー全体の外周 bbox を検出
-      2. トレー内の「ごはん」領域 (大きな白〜薄色領域) を検出
-      3. ごはんの上端を上下段の境界、ごはんの右端を下段の左右境界に使う
-      4. 上段の左右分割点は、上段内の食材輪郭位置から推定
+      2. トレー左下の「ごはん」領域を厳密な HSV + 領域制限で検出
+         （他エリアの白系食材と混同しないよう、トレー左 60%・下 55% に限定）
+      3. ごはん bbox から 上下段境界・下右エリアの左端 を算出
+      4. 上段の左右分割点は、上段内の食材輪郭の水平ギャップから推定
       5. どこかで失敗したら従来の輪郭ベース/固定比率にフォールバック
     """
     h, w = img_bgr.shape[:2]
@@ -350,15 +362,17 @@ def detect_bento_areas(img_bgr: np.ndarray) -> dict:
     inside_tray = np.zeros_like(tray_closed)
     cv2.drawContours(inside_tray, [tray_c], -1, 255, -1)
 
-    # Step 2: ごはん領域検出 (下半分の大きな白っぽい領域)
+    # Step 2: ごはん領域検出
+    # 厳密条件: 低彩度 (S < 55) かつ 高明度 (V > 160) + 左下領域に制限
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    rice_mask = cv2.inRange(hsv, np.array([0, 0, 120]), np.array([180, 75, 255]))
+    rice_mask = cv2.inRange(hsv, np.array([0, 0, 160]), np.array([180, 55, 255]))
     rice_mask = cv2.bitwise_and(rice_mask, inside_tray)
 
-    bottom_region = np.zeros_like(rice_mask)
-    y_start = ty + int(th * 0.35)
-    bottom_region[y_start: ty + th, tx: tx + tw] = 255
-    rice_mask = cv2.bitwise_and(rice_mask, bottom_region)
+    bottom_left_region = np.zeros_like(rice_mask)
+    y_start = ty + int(th * 0.40)                # 下 60% のみ
+    x_end   = tx + int(tw * 0.65)                # 左 65% のみ
+    bottom_left_region[y_start: ty + th, tx: x_end] = 255
+    rice_mask = cv2.bitwise_and(rice_mask, bottom_left_region)
 
     rk = np.ones((15, 15), np.uint8)
     rice_mask = cv2.morphologyEx(rice_mask, cv2.MORPH_CLOSE, rk)
@@ -367,22 +381,33 @@ def detect_bento_areas(img_bgr: np.ndarray) -> dict:
     rice_contours, _ = cv2.findContours(rice_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     rice_contours = [c for c in rice_contours if cv2.contourArea(c) > tw * th * 0.06]
 
+    # ごはん bbox の妥当性チェック: アスペクト比と位置
+    rice_ok = False
+    rx = ry = rw = rh = 0
     if rice_contours:
         rice = max(rice_contours, key=cv2.contourArea)
         rx, ry, rw, rh = cv2.boundingRect(rice)
+        # ごはんは横長気味（w >= h * 0.8）で、トレー左下にあるはず
+        aspect = rw / max(rh, 1)
+        rice_rel_top = (ry - ty) / max(th, 1)
+        rice_rel_left = (rx - tx) / max(tw, 1)
+        if aspect >= 0.7 and rice_rel_top >= 0.30 and rice_rel_left <= 0.15:
+            rice_ok = True
 
+    if rice_ok:
         inset = max(2, int(min(tw, th) * 0.015))
 
-        # 上下段の y 境界
+        # 上下段の y 境界 (ごはんの上端 = 上段の下端)
         up_y1 = ty + inset
         up_y2 = ry
         lo_y1 = ry
         lo_y2 = ty + th - inset
 
         # Step 3: 上段の左右分割点
-        split_x = tx + int(tw * 0.37)  # 既定値
+        # 既定値はトレー幅の 37% 地点（小おかず : 大おかず = 37 : 63）
+        split_x = tx + int(tw * 0.37)
 
-        # 上段内の食材輪郭を見つけて分割点を推定
+        # 上段内の食材輪郭を見つけて分割点を精密化
         food_mask_full = cv2.bitwise_and(inside_tray, cv2.bitwise_not(tray_mask_rough))
         upper_food = food_mask_full.copy()
         upper_food[:up_y1, :] = 0
@@ -395,12 +420,10 @@ def detect_bento_areas(img_bgr: np.ndarray) -> dict:
         uc, _ = cv2.findContours(upper_food, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         uc_bbox = [cv2.boundingRect(c) for c in uc if cv2.contourArea(c) > tw * th * 0.012]
         if len(uc_bbox) >= 2:
-            # 左端 bbox (cx が最小) とそれ以外の最も近い bbox の境界から split を推定
             uc_bbox_sorted = sorted(uc_bbox, key=lambda b: b[0] + b[2] / 2)
             leftmost = uc_bbox_sorted[0]
             second   = uc_bbox_sorted[1]
-            # 左端 bbox の右端 と 2 番目 bbox の左端 の中点
-            left_right_edge = leftmost[0] + leftmost[2]
+            left_right_edge  = leftmost[0] + leftmost[2]
             second_left_edge = second[0]
             candidate = (left_right_edge + second_left_edge) / 2
             low_lim  = tx + tw * 0.22
