@@ -11,7 +11,7 @@ import json
 import io
 import re
 
-# --- 1. APIキーの設定 ---
+# --- 1. API KEY CONFIGURATION ---
 ANTHROPIC_API_KEY = "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"
 
 st.set_page_config(page_title="Bento Checker Pro", layout="wide", page_icon="🍱")
@@ -21,6 +21,7 @@ SAVE_DIR = "history_images"
 REFERENCE_FILE = "reference_empty.jpg"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
+# --- 2. HISTORY & CORRECTION LOGIC ---
 def load_shared_history():
     if os.path.exists(DB_FILE):
         try: return pd.read_csv(DB_FILE).to_dict('records')
@@ -40,29 +41,59 @@ def normalize_image(img_bgr):
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     return cv2.cvtColor(cv2.merge((clahe.apply(l), a, b_chan)), cv2.COLOR_LAB2BGR)
 
-# --- スタイル設定 ---
+# --- 3. STYLES (GRAY SIDEBAR UI FIX) ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Space+Mono:wght@700&display=swap');
 html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .stApp { background: linear-gradient(135deg, #f0ede8 0%, #e8e4de 100%); }
 .title-block { font-family: 'Space Mono', monospace; font-size: 2rem; color: #1a1a1a; margin-bottom: 20px; }
-.metric-card { background: white; border-radius: 15px; padding: 15px 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.05); margin-bottom: 10px; border-left: 5px solid #ccc; }
+.metric-card { background: white; border-radius: 15px; padding: 15px 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.05); margin-bottom: 10px; border-left: 5px solid #ccc; transition: transform 0.2s; }
+.metric-card:hover { transform: translateY(-2px); }
 .metric-card.pass { border-left-color: #2ecc71; }
 .metric-card.fail { border-left-color: #e74c3c; }
 .metric-value { font-family: 'Space Mono', monospace; font-size: 1.5rem; font-weight: 700; color: #1a1a1a; }
 .status-badge { display: inline-block; padding: 6px 20px; border-radius: 999px; font-family: 'Space Mono', monospace; font-weight: 700; font-size: 1.2rem; }
 .status-badge.pass { background: #d4f5e2; color: #1a8a4a; }
 .status-badge.fail { background: #fde8e8; color: #c0392b; }
-.advice-box { background: #ffffff; border-radius: 15px; padding: 20px; border: 1px solid #d0ccc5; margin-top: 10px; line-height: 1.7; color: #333; font-size: 0.95rem; }
+.advice-box { background: #ffffff; border-radius: 15px; padding: 20px; border: 1px solid #d0ccc5; margin-top: 10px; line-height: 1.6; color: #333; font-size: 0.95rem; }
 
-/* サイドバーUI */
-[data-testid="stSidebar"] { background: #1a1a1a !important; }
-[data-testid="stSidebar"] * { color: white !important; }
-[data-testid="stSidebar"] div[data-testid="stFileUploader"] { background-color: #262626 !important; border: 1px dashed #444 !important; border-radius: 10px !important; }
+/* Sidebar UI Fix: Cohesive Gray Theme (Eliminates White Blinding) */
+[data-testid="stSidebar"] {
+    background: #333333 !important; /* Professional Dark Gray */
+}
+[data-testid="stSidebar"] * {
+    color: #f0ede8 !important; /* Light text for contrast */
+}
+[data-testid="stSidebar"] .stMarkdown p {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: #f0ede8 !important;
+}
+/* Targets the blinding-white "New Scan" button */
+[data-testid="stSidebar"] .stButton button {
+    background-color: #414141 !important; /* Slightly lighter gray than sidebar */
+    border: 1px solid #555555 !important;
+    color: #f0ede8 !important;
+    font-weight: bold;
+}
+/* Targets the blinding-white File Uploader area */
+[data-testid="stSidebar"] div[data-testid="stFileUploader"] {
+    background-color: #333333 !important; /* Blends with sidebar gray */
+    border: 1px dashed #555555 !important;
+    border-radius: 10px !important;
+}
+[data-testid="stSidebar"] section[data-testid="stFileUploaderDropzone"] {
+    background-color: #333333 !important; /* Blends with sidebar gray */
+}
+/* Standardize other sidebar elements */
+[data-testid="stSidebar"] .stSlider label {
+    color: #f0ede8 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
+# --- 4. MAIN PROCESSING ---
 st.markdown('<div class="title-block">🍱 Bento Checker Pro</div>', unsafe_allow_html=True)
 
 @st.cache_resource
@@ -75,11 +106,12 @@ if 'selected_idx' not in st.session_state: st.session_state.selected_idx = None
 if 'last_uploaded_file' not in st.session_state: st.session_state.last_uploaded_file = None
 
 def pil_to_base64(img: Image.Image) -> str:
-    """通信エラーを防ぐため、AIに送る前に画像をリサイズ＆圧縮"""
-    img_rgb = img.convert("RGB")
-    img_rgb.thumbnail((800, 800), Image.Resampling.LANCZOS)
+    """圧縮してBase64化 (大きな画像対策)"""
+    max_size = 800
+    if max(img.size) > max_size:
+        img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img_rgb.save(buf, format="JPEG", quality=85)
+    img.save(buf, format="JPEG", quality=85)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def get_ai_advice(client, results, img_orig):
@@ -87,7 +119,7 @@ def get_ai_advice(client, results, img_orig):
     b64 = pil_to_base64(img_orig)
     summary = "\n".join(results)
     prompt = f"""
-    お弁当の盛り付け品質チェック結果（空白率）は以下の通りです：
+    お弁当の盛り付け品質チェック結果は以下の通りです：
     {summary}
     
     画像と結果から、以下の2点を必ず見出しをつけて具体的にフィードバックしてください。
@@ -98,19 +130,19 @@ def get_ai_advice(client, results, img_orig):
     【改善点】
     空白を埋める、またはより見栄えを良くするための具体的なアドバイス（「右上のハンバーグを少し手前に引いて奥にブロッコリーを添える」など）
     
-    ※注意：アルミカップや紙カップが露出している部分は「空白（NG）」ではありません。容器の赤い底面が見えている部分のみを指摘してください。
+    ※注意：アルミカップや紙カップが露出している部分は「空白」ではありません。容器の赤い底面が見えている部分のみを指摘してください。
     """
     try:
         msg = client.messages.create(
             model="claude-3-5-sonnet-20241022",
-            max_tokens=400,
+            max_tokens=500,
             messages=[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64}},{"type":"text","text":prompt}]}]
         )
         return msg.content[0].text
     except Exception as e:
-        # エラー発生時はなぜ失敗したかを画面に表示する
         return f"⚠️ AIアドバイスの生成に失敗しました（通信エラーまたはAPI制限）。詳細: {str(e)}"
 
+# サイドバー
 with st.sidebar:
     if st.button("＋ 新規スキャン", use_container_width=True):
         st.session_state.selected_idx = None
@@ -121,10 +153,11 @@ with st.sidebar:
     up_ref = st.file_uploader("参考画像をアップロード", type=['jpg', 'png', 'jpeg'], key="ref_up", label_visibility="collapsed")
     if up_ref:
         Image.open(up_ref).convert("RGB").save(REFERENCE_FILE)
-        st.success("容器を登録しました")
+        st.success("容器を学習しました")
     st.markdown("📏 **色許容度**")
     tolerance = st.slider("tolerance", 10.0, 50.0, 25.0, label_visibility="collapsed")
 
+# 履歴読み込み
 history = load_shared_history()
 
 if st.session_state.selected_idx is None:
@@ -132,7 +165,7 @@ if st.session_state.selected_idx is None:
     
     if up and up.name != st.session_state.last_uploaded_file:
         st.session_state.last_uploaded_file = up.name
-        with st.spinner("AIが盛り付けの良い点と改善点を分析中..."):
+        with st.spinner("AIと画像処理で解析中..."):
             img_orig = Image.open(up).convert("RGB")
             img_np = np.array(img_orig)
             h, w = img_np.shape[:2]
@@ -159,6 +192,7 @@ if st.session_state.selected_idx is None:
                 roi_norm = normalize_image(roi_bgr)
                 roi_lab = cv2.cvtColor(roi_norm, cv2.COLOR_BGR2LAB).astype(np.float32)
                 
+                # 色解析（CV）
                 if ref_stats:
                     dist = np.sqrt(np.sum((roi_lab - np.array(ref_stats["mean"]))**2 * [0.6, 1.2, 1.2], axis=2))
                     mask = (dist < tolerance).astype(np.uint8) * 255
@@ -183,14 +217,13 @@ if st.session_state.selected_idx is None:
                         ai_pct = data.get("pct", cv_pct)
                     except: pass
 
-                final_pct = round(cv_pct * 0.2 + ai_pct * 0.8, 1)
+                final_pct = round(cv_pct * 0.3 + ai_pct * 0.7, 1) # AIの判断を優先
                 results_raw.append(f"{name}@{final_pct}")
                 results_list.append(f"{name}: {final_pct}%")
                 
                 t_roi = draw_np[y1:y1+mask.shape[0], x1:x1+mask.shape[1]]
                 t_roi[mask > 0] = t_roi[mask > 0] * 0.5 + np.array([255, 230, 0]) * 0.5
             
-            # アドバイスの取得
             advice = get_ai_advice(client, results_list, img_orig)
             
             path = f"{SAVE_DIR}/res_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
@@ -203,7 +236,7 @@ if st.session_state.selected_idx is None:
                 "img_path": path,
                 "avg_emptiness": round(avg_v, 1),
                 "detail_text": " / ".join(results_raw),
-                "advice": advice # 保存データにアドバイスを含める
+                "advice": advice
             }
             pd.DataFrame([new_rec]).to_csv(DB_FILE, mode='a', header=not os.path.exists(DB_FILE), index=False)
             st.session_state.selected_idx = len(load_shared_history()) - 1
@@ -216,9 +249,8 @@ else:
         c1, c2 = st.columns([1.3, 0.7])
         with c1: 
             st.image(data['img_path'], use_container_width=True)
-            st.markdown(f'<div style="font-weight:700; color:#1a1a1a; margin-top:15px;">💡 AIフィードバック</div>', unsafe_allow_html=True)
-            # 万が一データがない場合はデフォルトメッセージ
-            st.markdown(f'<div class="advice-box">{data.get("advice", "※この履歴データにはアドバイスが保存されていません。")}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="section-label" style="color:#1a1a1a; margin-top:15px;">💡 AIフィードバック</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="advice-box">{data.get("advice", "アドバイスはありません。")}</div>', unsafe_allow_html=True)
         with c2:
             st.markdown(f'<div class="status-badge {data["status"].lower()}">{data["status"]}</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="metric-card"><small>平均空き率</small><div class="metric-value">{data["avg_emptiness"]}%</div></div>', unsafe_allow_html=True)
@@ -228,5 +260,4 @@ else:
                     st.markdown(f'<div class="metric-card"><small>{nm}</small><div class="metric-value">{pct}%</div></div>', unsafe_allow_html=True)
             if st.button("← 戻る", use_container_width=True):
                 st.session_state.selected_idx = None
-                st.session_state.last_uploaded_file = None
                 st.rerun()
