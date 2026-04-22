@@ -11,7 +11,7 @@ import json
 import io
 import re
 
-# --- 1. API KEY CONFIGURATION ---
+# --- 1. APIキーの設定 ---
 ANTHROPIC_API_KEY = "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"
 
 st.set_page_config(page_title="Bento Checker Pro", layout="wide", page_icon="🍱")
@@ -21,7 +21,6 @@ SAVE_DIR = "history_images"
 REFERENCE_FILE = "reference_empty.jpg"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-# --- 2. HISTORY & CORRECTION LOGIC ---
 def load_shared_history():
     if os.path.exists(DB_FILE):
         try: return pd.read_csv(DB_FILE).to_dict('records')
@@ -41,59 +40,29 @@ def normalize_image(img_bgr):
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     return cv2.cvtColor(cv2.merge((clahe.apply(l), a, b_chan)), cv2.COLOR_LAB2BGR)
 
-# --- 3. STYLES (GRAY SIDEBAR UI FIX) ---
+# --- スタイル設定 ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Space+Mono:wght@700&display=swap');
 html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .stApp { background: linear-gradient(135deg, #f0ede8 0%, #e8e4de 100%); }
 .title-block { font-family: 'Space Mono', monospace; font-size: 2rem; color: #1a1a1a; margin-bottom: 20px; }
-.metric-card { background: white; border-radius: 15px; padding: 15px 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.05); margin-bottom: 10px; border-left: 5px solid #ccc; transition: transform 0.2s; }
-.metric-card:hover { transform: translateY(-2px); }
+.metric-card { background: white; border-radius: 15px; padding: 15px 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.05); margin-bottom: 10px; border-left: 5px solid #ccc; }
 .metric-card.pass { border-left-color: #2ecc71; }
 .metric-card.fail { border-left-color: #e74c3c; }
 .metric-value { font-family: 'Space Mono', monospace; font-size: 1.5rem; font-weight: 700; color: #1a1a1a; }
 .status-badge { display: inline-block; padding: 6px 20px; border-radius: 999px; font-family: 'Space Mono', monospace; font-weight: 700; font-size: 1.2rem; }
 .status-badge.pass { background: #d4f5e2; color: #1a8a4a; }
 .status-badge.fail { background: #fde8e8; color: #c0392b; }
-.advice-box { background: #ffffff; border-radius: 15px; padding: 20px; border: 1px solid #d0ccc5; margin-top: 10px; line-height: 1.6; color: #333; font-size: 0.95rem; }
+.advice-box { background: #ffffff; border-radius: 15px; padding: 20px; border: 1px solid #d0ccc5; margin-top: 10px; line-height: 1.7; color: #333; font-size: 0.95rem; }
 
-/* Sidebar UI Fix: Cohesive Gray Theme (Eliminates White Blinding) */
-[data-testid="stSidebar"] {
-    background: #333333 !important; /* Professional Dark Gray */
-}
-[data-testid="stSidebar"] * {
-    color: #f0ede8 !important; /* Light text for contrast */
-}
-[data-testid="stSidebar"] .stMarkdown p {
-    font-size: 0.9rem;
-    font-weight: 600;
-    color: #f0ede8 !important;
-}
-/* Targets the blinding-white "New Scan" button */
-[data-testid="stSidebar"] .stButton button {
-    background-color: #414141 !important; /* Slightly lighter gray than sidebar */
-    border: 1px solid #555555 !important;
-    color: #f0ede8 !important;
-    font-weight: bold;
-}
-/* Targets the blinding-white File Uploader area */
-[data-testid="stSidebar"] div[data-testid="stFileUploader"] {
-    background-color: #333333 !important; /* Blends with sidebar gray */
-    border: 1px dashed #555555 !important;
-    border-radius: 10px !important;
-}
-[data-testid="stSidebar"] section[data-testid="stFileUploaderDropzone"] {
-    background-color: #333333 !important; /* Blends with sidebar gray */
-}
-/* Standardize other sidebar elements */
-[data-testid="stSidebar"] .stSlider label {
-    color: #f0ede8 !important;
-}
+/* サイドバーUI */
+[data-testid="stSidebar"] { background: #1a1a1a !important; }
+[data-testid="stSidebar"] * { color: white !important; }
+[data-testid="stSidebar"] div[data-testid="stFileUploader"] { background-color: #262626 !important; border: 1px dashed #444 !important; border-radius: 10px !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 4. MAIN PROCESSING ---
 st.markdown('<div class="title-block">🍱 Bento Checker Pro</div>', unsafe_allow_html=True)
 
 @st.cache_resource
@@ -106,20 +75,17 @@ if 'selected_idx' not in st.session_state: st.session_state.selected_idx = None
 if 'last_uploaded_file' not in st.session_state: st.session_state.last_uploaded_file = None
 
 def pil_to_base64(img: Image.Image) -> str:
-    """圧縮してBase64化 (大きな画像対策)"""
-    max_size = 800
-    if max(img.size) > max_size:
-        img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+    img_rgb = img.convert("RGB")
+    img_rgb.thumbnail((800, 800), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
+    img_rgb.save(buf, format="JPEG", quality=85)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def get_ai_advice(client, results, img_orig):
-    """良い点と改善点を明確に指摘させるフィードバックエンジン"""
     b64 = pil_to_base64(img_orig)
     summary = "\n".join(results)
     prompt = f"""
-    お弁当の盛り付け品質チェック結果は以下の通りです：
+    お弁当の盛り付け品質チェック結果（空白率）は以下の通りです：
     {summary}
     
     画像と結果から、以下の2点を必ず見出しをつけて具体的にフィードバックしてください。
@@ -128,21 +94,19 @@ def get_ai_advice(client, results, img_orig):
     今の盛り付けで優れているところ（彩りのバランス、詰め方の工夫など）
     
     【改善点】
-    空白を埋める、またはより見栄えを良くするための具体的なアドバイス（「右上のハンバーグを少し手前に引いて奥にブロッコリーを添える」など）
-    
-    ※注意：アルミカップや紙カップが露出している部分は「空白」ではありません。容器の赤い底面が見えている部分のみを指摘してください。
+    空白を埋める、またはより見栄えを良くするための具体的なアドバイス。
+    ※重要ルール：「アルミカップや紙カップ」が見えている部分は空白ではありません。卵焼きの横や、おかずの隙間から「お弁当箱の赤い底面」が露出している箇所を具体的に指摘して、どう埋めればいいかアドバイスしてください。
     """
     try:
         msg = client.messages.create(
             model="claude-3-5-sonnet-20241022",
-            max_tokens=500,
+            max_tokens=400,
             messages=[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64}},{"type":"text","text":prompt}]}]
         )
         return msg.content[0].text
     except Exception as e:
-        return f"⚠️ AIアドバイスの生成に失敗しました（通信エラーまたはAPI制限）。詳細: {str(e)}"
+        return f"⚠️ AIアドバイスの生成に失敗しました。詳細: {str(e)}"
 
-# サイドバー
 with st.sidebar:
     if st.button("＋ 新規スキャン", use_container_width=True):
         st.session_state.selected_idx = None
@@ -153,11 +117,10 @@ with st.sidebar:
     up_ref = st.file_uploader("参考画像をアップロード", type=['jpg', 'png', 'jpeg'], key="ref_up", label_visibility="collapsed")
     if up_ref:
         Image.open(up_ref).convert("RGB").save(REFERENCE_FILE)
-        st.success("容器を学習しました")
+        st.success("容器を登録しました")
     st.markdown("📏 **色許容度**")
     tolerance = st.slider("tolerance", 10.0, 50.0, 25.0, label_visibility="collapsed")
 
-# 履歴読み込み
 history = load_shared_history()
 
 if st.session_state.selected_idx is None:
@@ -165,14 +128,15 @@ if st.session_state.selected_idx is None:
     
     if up and up.name != st.session_state.last_uploaded_file:
         st.session_state.last_uploaded_file = up.name
-        with st.spinner("AIと画像処理で解析中..."):
+        with st.spinner("AIが盛り付けの良い点と改善点を分析中..."):
             img_orig = Image.open(up).convert("RGB")
             img_np = np.array(img_orig)
             h, w = img_np.shape[:2]
             
+            # いただいた写真の仕切り位置に合わせて、左上と右上の境界を微調整（w*0.33に変更）
             area_defs = {
-                "右上（メイン）": (int(h*0.08), int(h*0.48), int(w*0.48), int(w*0.95)),
-                "左上（副菜）": (int(h*0.08), int(h*0.48), int(w*0.05), int(w*0.45)),
+                "右上（メイン）": (int(h*0.08), int(h*0.48), int(w*0.33), int(w*0.95)),
+                "左上（副菜）": (int(h*0.08), int(h*0.48), int(w*0.05), int(w*0.33)),
                 "右下（副菜）": (int(h*0.5), int(h*0.95), int(w*0.52), int(w*0.95))
             }
             
@@ -192,7 +156,6 @@ if st.session_state.selected_idx is None:
                 roi_norm = normalize_image(roi_bgr)
                 roi_lab = cv2.cvtColor(roi_norm, cv2.COLOR_BGR2LAB).astype(np.float32)
                 
-                # 色解析（CV）
                 if ref_stats:
                     dist = np.sqrt(np.sum((roi_lab - np.array(ref_stats["mean"]))**2 * [0.6, 1.2, 1.2], axis=2))
                     mask = (dist < tolerance).astype(np.uint8) * 255
@@ -203,21 +166,29 @@ if st.session_state.selected_idx is None:
                 mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
                 cv_pct = round((np.sum(mask > 0) / mask.size) * 100.0, 1)
                 
-                # カップを除外させる精密判定
+                # 画像の事例を反映した、より厳密なAIプロンプト
                 ai_pct = cv_pct
                 if client:
                     try:
                         b64_roi = pil_to_base64(roi)
+                        prompt_roi = """
+                        お弁当の「空白率（0〜100）」を判定してください。
+                        【重要ルール】
+                        ・「空白」とは、食材の隙間から「お弁当箱の赤いプラスチックの底面」がハッキリと見えている部分のことです。（例：卵焼きの横の隙間、メインおかずと壁の間の赤い隙間など）
+                        ・アルミカップや紙カップが見えている部分は「空白」ではありません。
+                        Return JSON ONLY: {"pct": number}
+                        """
                         msg_roi = client.messages.create(
                             model="claude-3-5-sonnet-20241022",
                             max_tokens=100,
-                            messages=[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64_roi}},{"type":"text","text":"Analyze tray emptiness. NOTE: Colored cups are NOT empty space. Return JSON ONLY: {\"pct\": number}"}]}]
+                            messages=[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64_roi}},{"type":"text","text":prompt_roi}]}]
                         )
                         data = json.loads(re.search(r'\{.*\}', msg_roi.content[0].text).group())
                         ai_pct = data.get("pct", cv_pct)
                     except: pass
 
-                final_pct = round(cv_pct * 0.3 + ai_pct * 0.7, 1) # AIの判断を優先
+                # AIの判定を強く反映（80%）
+                final_pct = round(cv_pct * 0.2 + ai_pct * 0.8, 1)
                 results_raw.append(f"{name}@{final_pct}")
                 results_list.append(f"{name}: {final_pct}%")
                 
@@ -250,7 +221,7 @@ else:
         with c1: 
             st.image(data['img_path'], use_container_width=True)
             st.markdown(f'<div class="section-label" style="color:#1a1a1a; margin-top:15px;">💡 AIフィードバック</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="advice-box">{data.get("advice", "アドバイスはありません。")}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="advice-box">{data.get("advice", "※この履歴データにはアドバイスが保存されていません。")}</div>', unsafe_allow_html=True)
         with c2:
             st.markdown(f'<div class="status-badge {data["status"].lower()}">{data["status"]}</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="metric-card"><small>平均空き率</small><div class="metric-value">{data["avg_emptiness"]}%</div></div>', unsafe_allow_html=True)
@@ -260,4 +231,5 @@ else:
                     st.markdown(f'<div class="metric-card"><small>{nm}</small><div class="metric-value">{pct}%</div></div>', unsafe_allow_html=True)
             if st.button("← 戻る", use_container_width=True):
                 st.session_state.selected_idx = None
+                st.session_state.last_uploaded_file = None
                 st.rerun()
