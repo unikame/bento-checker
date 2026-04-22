@@ -11,12 +11,16 @@ import json
 import io
 import re
 
-# --- 1. APIキーの設定 (ここを一番確認してください！) ---
-# 画像で見えていた sk-ant-api03-... の【すべての文字列】をここに貼り付けます。
-ANTHROPIC_API_KEY = "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"
+# --- 1. APIキーの設定 (Secretsから取得) ---
+# コードの中にはキーを書かない！GitHubに怒られないためのプロの書き方です。
+try:
+    ANTHROPIC_API_KEY = st.secrets["ANTHROPIC_API_KEY"]
+except:
+    ANTHROPIC_API_KEY = "" # ローカルテスト用
 
 st.set_page_config(page_title="Bento Checker Pro", layout="wide", page_icon="🍱")
 
+# フォルダ設定
 DB_FILE = "shared_history.csv"
 SAVE_DIR = "history_images"
 REFERENCE_FILE = "reference_empty.jpg"
@@ -35,12 +39,13 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .status-badge { display: inline-block; padding: 8px 24px; border-radius: 50px; font-family: 'Space Mono', monospace; font-weight: 700; font-size: 1.3rem; }
 .status-badge.pass { background: #d4f5e2; color: #1a8a4a; }
 .status-badge.fail { background: #fde8e8; color: #c0392b; }
+.advice-box { background: #ffffff; border-radius: 15px; padding: 20px; border: 1px solid #d0ccc5; margin-top: 10px; line-height: 1.7; color: #333; font-size: 0.95rem; }
 [data-testid="stSidebar"] { background: #333333 !important; }
 [data-testid="stSidebar"] * { color: #f0ede8 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. 画像処理・AIエンジン ---
+# --- 3. 補助関数 ---
 def normalize_image(img_bgr):
     res = img_bgr.astype(np.float32)
     avg_b, avg_g, avg_r = np.mean(res[:,:,0]), np.mean(res[:,:,1]), np.mean(res[:,:,2])
@@ -63,15 +68,14 @@ def pil_to_base64(img: Image.Image) -> str:
 
 @st.cache_resource
 def get_anthropic_client():
-    if "sk-ant" not in ANTHROPIC_API_KEY:
-        st.error("⚠️ APIキーが正しく設定されていません。sk-ant- で始まるキーを入力してください。")
-        return None
+    if not ANTHROPIC_API_KEY: return None
     return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# --- 4. メイン UI ---
+# --- 4. メイン処理 ---
 st.markdown('<h2 style="color:#1a1a1a; font-family:Space Mono;">🍱 Bento Checker Pro</h2>', unsafe_allow_html=True)
-
 client = get_anthropic_client()
+
+if 'selected_idx' not in st.session_state: st.session_state.selected_idx = None
 
 with st.sidebar:
     if st.button("＋ 新規スキャン", use_container_width=True):
@@ -84,73 +88,68 @@ with st.sidebar:
         Image.open(up_ref).convert("RGB").save(REFERENCE_FILE)
         st.success("容器の色を学習しました")
 
-up = st.file_uploader("お弁当の写真をアップロードしてください", type=['jpg', 'png', 'jpeg'])
+# 解析履歴
+history = pd.read_csv(DB_FILE).to_dict('records') if os.path.exists(DB_FILE) else []
 
-if up and "processed" not in st.session_state:
-    with st.spinner("AIと通信中..."):
-        img_orig = Image.open(up).convert("RGB")
-        h, w = np.array(img_orig).shape[:2]
-        
-        # 判定エリアをより厳密に設定
-        area_defs = {
-            "右上（メイン）": (int(h*0.08), int(h*0.48), int(w*0.35), int(w*0.95)),
-            "左上（副菜）": (int(h*0.08), int(h*0.48), int(w*0.05), int(w*0.35)),
-            "右下（副菜）": (int(h*0.5), int(h*0.95), int(w*0.52), int(w*0.95))
-        }
-        
-        results, debug_logs = [], []
-        
-        for name, (y1, y2, x1, x2) in area_defs.items():
-            roi = img_orig.crop((x1, y1, x2, y2))
-            final_pct, reason = 0.0, "通信エラー"
-            
-            if client:
-                try:
-                    b64 = pil_to_base64(roi)
-                    msg = client.messages.create(
-                        model="claude-3-5-sonnet-20241022",
-                        max_tokens=300,
-                        messages=[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64}},{"type":"text","text":"Analyze tray emptiness (RED plastic area). If there is a clear red gap next to food, return at least 18%. JSON ONLY: {\"pct\": number, \"reason\": \"string\"}"}]}]
-                    )
-                    data = json.loads(re.search(r'\{.*\}', msg.content[0].text).group())
-                    final_pct = data.get("pct", 0.0)
-                    reason = data.get("reason", "判定完了")
-                    debug_logs.append(f"✅ {name}: {final_pct}%")
-                except Exception as e:
-                    # エラーの詳細をログに残す
-                    reason = f"エラー: {str(e)[:50]}"
-                    debug_logs.append(f"❌ {name}: 通信失敗 ({str(e)})")
-            
-            results.append({"name": name, "pct": final_pct, "reason": reason})
-        
-        st.session_state.processed = {"results": results, "logs": debug_logs, "img": img_orig}
-        st.rerun()
-
-# --- 結果表示 ---
-if "processed" in st.session_state:
-    p = st.session_state.processed
-    c1, c2 = st.columns([1.2, 0.8])
-    
+if st.session_state.selected_idx is None:
+    up = st.file_uploader("お弁当の写真をアップロードしてください", type=['jpg', 'png', 'jpeg'])
+    if up:
+        if not client:
+            st.error("⚠️ APIキーが正しく読み込めていません。StreamlitのSecretsを確認してください。")
+        else:
+            with st.spinner("AIが分析中..."):
+                img_orig = Image.open(up).convert("RGB")
+                h, w = np.array(img_orig).shape[:2]
+                area_defs = {
+                    "右上（メイン）": (int(h*0.08), int(h*0.48), int(w*0.35), int(w*0.95)),
+                    "左上（副菜）": (int(h*0.08), int(h*0.48), int(w*0.05), int(w*0.35)),
+                    "右下（副菜）": (int(h*0.5), int(h*0.95), int(w*0.52), int(w*0.95))
+                }
+                results, logs = [], []
+                for name, (y1, y2, x1, x2) in area_defs.items():
+                    roi = img_orig.crop((x1, y1, x2, y2))
+                    try:
+                        b64 = pil_to_base64(roi)
+                        msg = client.messages.create(
+                            model="claude-3-5-sonnet-20241022",
+                            max_tokens=300,
+                            messages=[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64}},{"type":"text","text":"Analyze tray emptiness. If you see RED bottom, return at least 18%. JSON ONLY: {\"pct\": number, \"reason\": \"string\"}"}]}]
+                        )
+                        data = json.loads(re.search(r'\{.*\}', msg.content[0].text).group())
+                        results.append({"name": name, "pct": data.get("pct", 0), "reason": data.get("reason", "")})
+                        logs.append(f"✅ {name}: 成功")
+                    except Exception as e:
+                        results.append({"name": name, "pct": 0, "reason": f"エラー: {str(e)[:40]}"})
+                        logs.append(f"❌ {name}: {str(e)}")
+                
+                path = f"{SAVE_DIR}/res_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
+                img_orig.save(path)
+                
+                avg_v = np.mean([r["pct"] for r in results])
+                new_rec = {
+                    "time": datetime.now().strftime("%m/%d %H:%M"),
+                    "status": "FAIL" if any(r["pct"] >= 15 for r in results) else "PASS",
+                    "img_path": path,
+                    "avg_emptiness": round(avg_v, 1),
+                    "detail_text": " / ".join([f"{r['name']}@{r['pct']}" for r in results])
+                }
+                pd.DataFrame([new_rec]).to_csv(DB_FILE, mode='a', header=not os.path.exists(DB_FILE), index=False)
+                st.session_state.selected_idx = len(pd.read_csv(DB_FILE)) - 1
+                st.rerun()
+else:
+    # 履歴詳細
+    data = history[st.session_state.selected_idx]
+    c1, c2 = st.columns([1.3, 0.7])
     with c1:
-        st.image(p["img"], use_container_width=True)
-        with st.expander("🛠 AI通信ログ（接続エラーの確認）"):
-            for log in p["logs"]:
-                st.write(log)
-            if not p["logs"]:
-                st.error("AIとの通信が一度も行われませんでした。APIキーを確認してください。")
-
+        st.image(data['img_path'], use_container_width=True)
     with c2:
-        # 15%以上が一つでもあればFAIL
-        is_fail = any(r["pct"] >= 15.0 for r in p["results"])
-        status = "FAIL" if is_fail else "PASS"
-        st.markdown(f'<div class="status-badge {status.lower()}">{status}</div>', unsafe_allow_html=True)
-        
-        for r in p["results"]:
-            cls = "fail" if r["pct"] >= 15.0 else "pass"
-            st.markdown(f"""
-            <div class="metric-card {cls}">
-                <small style="color:#666;">{r['name']}</small>
-                <div class="metric-value">{r['pct']}%</div>
-                <div style="font-size:0.8rem; color:#888;">{r['reason']}</div>
-            </div>
-            """, unsafe_allow_html=True)
+        status = data['status'].lower()
+        st.markdown(f'<div class="status-badge {status}">{data["status"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="metric-card"><small>平均空き率</small><div class="metric-value">{data["avg_emptiness"]}%</div></div>', unsafe_allow_html=True)
+        for part in data['detail_text'].split(" / "):
+            if "@" in part:
+                nm, pct = part.split("@")
+                st.markdown(f'<div class="metric-card {"fail" if float(pct)>=15 else "pass"}"><small>{nm}</small><div class="metric-value">{pct}%</div></div>', unsafe_allow_html=True)
+        if st.button("← 戻る", use_container_width=True):
+            st.session_state.selected_idx = None
+            st.rerun()
