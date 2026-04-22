@@ -12,29 +12,58 @@ import io
 import re
 
 # --- 初期設定 ---
-st.set_page_config(page_title="Bento Checker Pro Max", layout="wide", page_icon="🍱")
+st.set_page_config(page_title="Bento Checker Pro", layout="wide", page_icon="🍱")
 
 DB_FILE = "shared_history.csv"
 SAVE_DIR = "history_images"
 REFERENCE_FILE = "reference_empty.jpg"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-# --- スタイル設定 ---
+# --- スタイル (元のデザインを維持) ---
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@700&family=Inter:wght@400;600&display=swap');
-html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-.stApp { background: #f8f9fa; }
-.title-block { font-family: 'Space Mono', monospace; font-size: 2.2rem; color: #1e1e1e; margin-bottom: 0.5rem; }
-.metric-card { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border-top: 5px solid #ddd; }
-.metric-card.pass { border-top-color: #28a745; }
-.metric-card.fail { border-top-color: #dc3545; }
-.metric-card.warn { border-top-color: #ffc107; }
-.status-badge { padding: 8px 24px; border-radius: 50px; font-weight: 700; font-family: 'Space Mono'; display: inline-block; }
-.status-badge.pass { background: #e7f3eb; color: #28a745; }
-.status-badge.fail { background: #fbebed; color: #dc3545; }
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Space+Mono:wght@700&display=swap');
+html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+.main { background-color: #f0ede8; }
+.stApp { background: linear-gradient(135deg, #f0ede8 0%, #e8e4de 100%); }
+.title-block { font-family: 'Space Mono', monospace; font-size: 2rem; letter-spacing: -1px; color: #1a1a1a; margin-bottom: 4px; }
+.subtitle-block { font-size: 0.85rem; color: #888; letter-spacing: 2px; text-transform: uppercase; margin-bottom: 24px; }
+.metric-card { background: white; border-radius: 20px; padding: 20px 24px; box-shadow: 0 2px 16px rgba(0,0,0,0.07); margin-bottom: 12px; border-left: 5px solid #ccc; transition: transform 0.2s; }
+.metric-card:hover { transform: translateY(-2px); }
+.metric-card.pass { border-left-color: #2ecc71; }
+.metric-card.fail { border-left-color: #e74c3c; }
+.metric-card.warn { border-left-color: #f39c12; }
+.metric-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1.5px; color: #999; margin-bottom: 4px; }
+.metric-value { font-family: 'Space Mono', monospace; font-size: 1.8rem; font-weight: 700; color: #1a1a1a; }
+.metric-label { font-size: 0.8rem; color: #888; margin-top: 2px; }
+.status-badge { display: inline-block; padding: 6px 20px; border-radius: 999px; font-family: 'Space Mono', monospace; font-size: 1rem; font-weight: 700; letter-spacing: 2px; margin-bottom: 16px; }
+.status-badge.pass { background: #d4f5e2; color: #1a8a4a; }
+.status-badge.fail { background: #fde8e8; color: #c0392b; }
+.ai-comment { background: #fafafa; border: 1px solid #e8e8e8; border-radius: 14px; padding: 16px 20px; font-size: 0.9rem; color: #444; line-height: 1.7; margin-top: 8px; }
+.section-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 2px; color: #bbb; margin-bottom: 6px; }
+div[data-testid="stFileUploader"] { background: white; border: 2px dashed #d0ccc5; border-radius: 20px; padding: 16px; }
+[data-testid="stSidebar"] { background: #1a1a1a !important; }
+[data-testid="stSidebar"] * { color: #f0ede8 !important; }
 </style>
 """, unsafe_allow_html=True)
+
+# --- 商用グレードの色補正ロジック ---
+def normalize_image(img_bgr):
+    """Gray World ホワイトバランス補正 + CLAHE コントラスト補正"""
+    res = img_bgr.astype(np.float32)
+    # ホワイトバランス
+    avg_b, avg_g, avg_r = np.mean(res[:, :, 0]), np.mean(res[:, :, 1]), np.mean(res[:, :, 2])
+    avg_gray = (avg_b + avg_g + avg_r) / 3.0
+    res[:, :, 0] *= (avg_gray / (avg_b + 1e-6))
+    res[:, :, 1] *= (avg_gray / (avg_g + 1e-6))
+    res[:, :, 2] *= (avg_gray / (avg_r + 1e-6))
+    res = np.clip(res, 0, 255).astype(np.uint8)
+    # コントラスト(CLAHE)
+    lab = cv2.cvtColor(res, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    cl = clahe.apply(l)
+    return cv2.cvtColor(cv2.merge((cl, a, b)), cv2.COLOR_LAB2BGR)
 
 # --- Anthropic クライアント ---
 @st.cache_resource
@@ -42,166 +71,181 @@ def get_anthropic_client():
     try:
         return anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
     except:
-        st.error("APIキーが設定されていません。")
+        st.error("ANTHROPIC_API_KEY が設定されていません。")
         st.stop()
-
-# --- 高度な画像補正ロジック (商用グレード) ---
-def normalize_image(img_bgr):
-    """
-    1. Gray World Assumption によるホワイトバランス補正
-    2. CLAHE によるコントラスト最適化（影の誤検出防止）
-    """
-    # ホワイトバランス補正
-    res = img_bgr.astype(np.float32)
-    avg_b, avg_g, avg_r = np.mean(res[:, :, 0]), np.mean(res[:, :, 1]), np.mean(res[:, :, 2])
-    avg_gray = (avg_b + avg_g + avg_r) / 3.0
-    res[:, :, 0] *= (avg_gray / (avg_b + 1e-6))
-    res[:, :, 1] *= (avg_gray / (avg_g + 1e-6))
-    res[:, :, 2] *= (avg_gray / (avg_r + 1e-6))
-    res = np.clip(res, 0, 255).astype(np.uint8)
-
-    # 局所コントラスト補正 (CLAHE)
-    lab = cv2.cvtColor(res, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
-    cl = clahe.apply(l)
-    res = cv2.cvtColor(cv2.merge((cl, a, b)), cv2.COLOR_LAB2BGR)
-    return res
 
 def pil_to_base64(img: Image.Image) -> str:
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
+    img.save(buf, format="JPEG", quality=88)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
-# --- 面積計算ロジック ---
+# --- 座標クランプ ---
+def clamp_rect(y1, y2, x1, x2, w, h):
+    x1i, y1i = max(0, min(int(x1), w-1)), max(0, min(int(y1), h-1))
+    x2i, y2i = max(0, min(int(x2), w-1)), max(0, min(int(y2), h-1))
+    if x2i <= x1i or y2i <= y1i: return None
+    return x1i, y1i, x2i, y2i
+
+# --- 空容器リファレンス管理 ---
+def load_reference_image():
+    if os.path.exists(REFERENCE_FILE):
+        return Image.open(REFERENCE_FILE).convert("RGB")
+    return None
+
+def get_reference_tray_lab_current():
+    ref_img = load_reference_image()
+    if ref_img is None: return None
+    ref_bgr = cv2.cvtColor(np.array(ref_img), cv2.COLOR_RGB2BGR)
+    ref_norm = normalize_image(ref_bgr)
+    ref_lab = cv2.cvtColor(ref_norm, cv2.COLOR_BGR2LAB)
+    return {"mean": np.mean(ref_lab, axis=(0, 1)).tolist()}
+
+# --- ハイブリッド解析 (CV + Vision) ---
 def compute_emptiness_cv(roi_pil, area_name, ref_stats, tolerance):
     roi_bgr = cv2.cvtColor(np.array(roi_pil), cv2.COLOR_RGB2BGR)
     roi_norm = normalize_image(roi_bgr)
-    
-    # LAB色空間での距離判定
     roi_lab = cv2.cvtColor(roi_norm, cv2.COLOR_BGR2LAB).astype(np.float32)
+
     if ref_stats:
         mean = np.array(ref_stats["mean"], dtype=np.float32)
         diff = roi_lab - mean
         dist = np.sqrt(np.sum(diff**2 * [0.6, 1.2, 1.2], axis=2))
         mask = (dist < tolerance).astype(np.uint8) * 255
     else:
-        # フォールバック: HSV
         hsv = cv2.cvtColor(roi_norm, cv2.COLOR_BGR2HSV)
-        m1 = cv2.inRange(hsv, np.array([0, 70, 40]), np.array([15, 255, 255]))
-        m2 = cv2.inRange(hsv, np.array([165, 70, 40]), np.array([180, 255, 255]))
-        mask = cv2.bitwise_or(m1, m2)
+        mask = cv2.bitwise_or(cv2.inRange(hsv, (0,70,40), (15,255,255)), cv2.inRange(hsv, (165,70,40), (180,255,255)))
 
-    # ノイズ除去
-    kernel = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    
-    # 比率計算
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
     pct = (np.sum(mask > 0) / mask.size) * 100.0
     return {"pct": round(pct, 1), "mask": mask}
 
 def compute_emptiness_vision(client, roi_pil, area_name):
-    """Claude Vision による意味的解析"""
     try:
         b64 = pil_to_base64(roi_pil)
-        prompt = f"お弁当の{area_name}です。赤いトレーの底面が見えている面積（空き率）を0-100%で判定し、JSON形式で返してください。回答例: {{\"pct\": 15.5, \"reason\": \"食材の隙間から底面が露出\"}}"
-        
+        prompt = f"お弁当の「{area_name}」エリアの画像です。赤いトレー底面が見えている割合を0-100の数値で判定し、以下のJSON形式のみで回答してください。{{\"emptiness_pct\": 数値, \"reason\": \"理由(20字以内)\"}}"
         msg = client.messages.create(
             model="claude-3-5-sonnet-20241022",
             max_tokens=200,
-            messages=[{"role": "user", "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": b64}},
-                {"type": "text", "text": prompt}
-            ]}]
+            messages=[{"role": "user", "content": [{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64}},{"type":"text","text":prompt}]}]
         )
-        data = json.loads(re.search(r'\{.*\}', msg.content[0].text).group())
-        return data
-    except:
-        return None
+        return json.loads(re.search(r'\{.*\}', msg.content[0].text).group())
+    except: return None
 
-# --- メインロジック ---
-def analyze_bento(client, img_orig, ref_stats, tolerance):
-    img_bgr = cv2.cvtColor(np.array(img_orig), cv2.COLOR_RGB2BGR)
+# --- エリア分割 (既存のロジックを商用向けに調整) ---
+def detect_bento_areas(img_bgr):
     h, w = img_bgr.shape[:2]
-    
-    # 簡易エリア分割 (右上, 左上, 右下)
-    areas = {
-        "左上（副菜）": (int(h*0.1), int(h*0.45), int(w*0.1), int(w*0.45)),
-        "右上（主菜）": (int(h*0.1), int(h*0.45), int(w*0.45), int(w*0.9)),
-        "右下（副菜）": (int(h*0.5), int(h*0.9), int(w*0.55), int(w*0.9)),
+    # デフォルトの3分割（右上・左上・右下）
+    return {
+        "上左（小おかず）": (int(h*0.12), int(h*0.46), int(w*0.12), int(w*0.42)),
+        "上右（大おかず）": (int(h*0.12), int(h*0.46), int(w*0.42), int(w*0.88)),
+        "下右（小おかず）": (int(h*0.52), int(h*0.88), int(w*0.58), int(w*0.88)),
+        "下左（ごはん）": (int(h*0.52), int(h*0.88), int(w*0.12), int(w*0.58))
     }
-    
-    results = []
-    overlay_mask = np.zeros((h, w), dtype=np.uint8)
 
+# --- 描画系 ---
+def draw_results_on_image(img_pil, areas, results, area_masks):
+    draw_img = np.array(img_pil.convert("RGB"))
     for name, (y1, y2, x1, x2) in areas.items():
-        roi = img_orig.crop((x1, y1, x2, y2))
-        
-        # ハイブリッド解析
-        cv_res = compute_emptiness_cv(roi, name, ref_stats, tolerance)
-        vision_res = compute_emptiness_vision(client, roi, name)
-        
-        # 最終パーセントの決定 (Visionが利用できれば70%の重みで合成)
-        if vision_res:
-            final_pct = (cv_res["pct"] * 0.3) + (vision_res["pct"] * 0.7)
-            reason = vision_res["reason"]
-        else:
-            final_pct = cv_res["pct"]
-            reason = "CV解析のみ"
-            
-        results.append({"name": name, "pct": final_pct, "reason": reason})
-        
-        # マスクの合成
-        m = cv_res["mask"]
-        overlay_mask[y1:y1+m.shape[0], x1:x1+m.shape[1]] = m
+        if name in area_masks:
+            m = area_masks[name]
+            roi = draw_img[y1:y1+m.shape[0], x1:x1+m.shape[1]]
+            roi[m > 0] = roi[m > 0] * 0.5 + np.array([255, 230, 0]) * 0.5
+    return Image.fromarray(draw_img)
 
-    return results, overlay_mask
+# --- 履歴管理系 ---
+def load_shared_history():
+    if os.path.exists(DB_FILE): return pd.read_csv(DB_FILE).to_dict('records')
+    return []
 
-# --- Streamlit UI ---
-def main():
-    st.markdown('<div class="title-block">Bento Checker Pro Max</div>', unsafe_allow_html=True)
-    client = get_anthropic_client()
+def save_history(record):
+    pd.DataFrame([record]).to_csv(DB_FILE, mode='a', header=not os.path.exists(DB_FILE), index=False)
+
+# --- メイン UI ---
+st.markdown('<div class="title-block">🍱 Bento Checker Pro</div>', unsafe_allow_html=True)
+st.markdown('<div class="subtitle-block">Hybrid CV & AI Analysis</div>', unsafe_allow_html=True)
+
+client = get_anthropic_client()
+if 'selected_idx' not in st.session_state: st.session_state.selected_idx = None
+
+# サイドバー
+with st.sidebar:
+    st.markdown('<div style="padding:10px 0;">🍱 Bento Checker</div>', unsafe_allow_html=True)
+    if st.button("＋ 新規スキャン", use_container_width=True):
+        st.session_state.selected_idx = None
+        st.rerun()
     
-    # サイドバー設定
-    with st.sidebar:
-        st.header("Settings")
-        tolerance = st.slider("Color Tolerance", 10.0, 50.0, 25.0)
-        up_ref = st.file_uploader("Reference (Empty Tray)", type=['jpg', 'png'])
-        
-        ref_stats = None
-        if up_ref:
-            ref_img = Image.open(up_ref).convert("RGB")
-            ref_bgr = cv2.cvtColor(np.array(ref_img), cv2.COLOR_RGB2BGR)
-            ref_lab = cv2.cvtColor(ref_bgr, cv2.COLOR_BGR2LAB)
-            ref_stats = {"mean": np.mean(ref_lab, axis=(0, 1)).tolist()}
-            st.success("Reference Loaded")
-
-    # メインアップローダー
-    up_main = st.file_uploader("Analyze Bento Image", type=['jpg', 'png'])
+    st.markdown("---")
+    ref_stats = get_reference_tray_lab_current()
+    if ref_stats: st.success("空容器: 登録済")
+    else: st.warning("空容器: 未登録")
     
-    if up_main:
-        img = Image.open(up_main).convert("RGB")
-        with st.spinner("Analyzing with Hybrid AI..."):
-            results, mask = analyze_bento(client, img, ref_stats, tolerance)
-        
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            # 視覚化
-            img_res = np.array(img)
-            img_res[mask > 0] = [255, 255, 0] # 空きを黄色でハイライト
-            st.image(img_res, caption="Detection Result", use_container_width=True)
-            
-        with col2:
-            st.subheader("Analysis Metrics")
-            for r in results:
-                status = "fail" if r["pct"] > 15 else "pass"
-                st.markdown(f"""
-                <div class="metric-card {status}">
-                    <small>{r['name']}</small>
-                    <h3>{r['pct']:.1f}%</h3>
-                    <p style='font-size:0.8rem; color:#666;'>{r['reason']}</p>
-                </div><br>
-                """, unsafe_allow_html=True)
+    up_ref = st.file_uploader("空容器を登録", type=['jpg', 'png'])
+    if up_ref:
+        Image.open(up_ref).save(REFERENCE_FILE)
+        st.rerun()
+    
+    tolerance = st.slider("色許容度", 10.0, 45.0, 25.0)
 
-if __name__ == "__main__":
-    main()
+# メイン処理
+history = load_shared_history()
+if st.session_state.selected_idx is None:
+    up = st.file_uploader("お弁当の写真をアップロード", type=['jpg', 'png'])
+    if up:
+        img_orig = Image.open(up).convert("RGB")
+        progress = st.progress(0, "解析中...")
+        
+        areas = detect_bento_areas(np.array(img_orig))
+        results = []
+        area_masks = {}
+        
+        for i, (name, (y1, y2, x1, x2)) in enumerate(areas.items()):
+            if "ごはん" in name: continue
+            roi = img_orig.crop((x1, y1, x2, y2))
+            cv_res = compute_emptiness_cv(roi, name, ref_stats, tolerance)
+            vis_res = compute_emptiness_vision(client, roi, name)
+            
+            # ハイブリッド重み付け判定
+            final_pct = (cv_res["pct"] * 0.3 + vis_res["emptiness_pct"] * 0.7) if vis_res else cv_res["pct"]
+            results.append({"name": name, "pct": round(final_pct, 1), "reason": vis_res["reason"] if vis_res else "CV"})
+            area_masks[name] = cv_res["mask"]
+            progress.progress((i+1)/len(areas))
+
+        # 保存と表示
+        out_pil = draw_results_on_image(img_orig, areas, results, area_masks)
+        path = f"{SAVE_DIR}/res_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
+        out_pil.save(path)
+        
+        avg_pct = np.mean([r["pct"] for r in results])
+        status = "PASS" if all(r["pct"] < 15 for r in results) else "FAIL"
+        
+        new_rec = {
+            "time": datetime.now().strftime("%m/%d %H:%M"),
+            "status": status,
+            "img_path": path,
+            "avg_emptiness": round(avg_pct, 1),
+            "detail_text": " / ".join([f"{r['name']}:{r['pct']}%" for r in results])
+        }
+        save_history(new_rec)
+        st.session_state.selected_idx = len(load_shared_history()) - 1
+        st.rerun()
+else:
+    # 詳細表示画面 (元のデザインを維持)
+    data = history[st.session_state.selected_idx]
+    col_img, col_info = st.columns([1.3, 0.7])
+    with col_img:
+        st.image(data['img_path'], use_container_width=True)
+    with col_info:
+        badge_cls = "pass" if data['status'] == "PASS" else "fail"
+        st.markdown(f'<div class="status-badge {badge_cls}">{data["status"]}</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="section-label">平均空き率</div><div class="metric-value">{data["avg_emptiness"]}%</div>', unsafe_allow_html=True)
+        
+        for part in data['detail_text'].split(" / "):
+            nm, pct = part.split(":")
+            st.markdown(f'''<div class="metric-card">
+                <div class="metric-title">{nm}</div>
+                <div class="metric-value">{pct}</div>
+            </div>''', unsafe_allow_html=True)
+        
+        if st.button("← 戻る"):
+            st.session_state.selected_idx = None
+            st.rerun()
