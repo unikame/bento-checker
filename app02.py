@@ -453,15 +453,19 @@ def detect_bento_areas(img_bgr: np.ndarray) -> dict:
 
     if rice_ok:
         inset = max(2, int(min(tw, th) * 0.015))
+        # 大おかず右端 / 下右下端は外縁リムを食わないよう余裕を持たせる
+        inset_right  = max(4, int(tw * 0.03))
+        inset_bottom = max(4, int(th * 0.025))
 
-        # Step 4: 上下段境界（ごはん上端に合わせる）
+        # Step 4: 上下段境界（ごはん上端/下端に合わせる）
         up_y1 = ty + inset
         up_y2 = ry
         lo_y1 = ry
-        lo_y2 = ty + th - inset
+        # 下右の下端は「ごはん下端」に揃える（トレー外縁まで伸ばさない）
+        lo_y2 = min(ty + th - inset_bottom, ry + rh)
 
-        # Step 5: 上段の左右分割点
-        split_x = tx + int(tw * 0.37)  # 既定値（小:大 = 37:63）
+        # Step 5: 上段の左右分割点（小:大 = 約 42:58、上左が狭くなり過ぎない様に）
+        split_x = tx + int(tw * 0.42)
 
         food_mask_full = cv2.bitwise_and(inside_tray, cv2.bitwise_not(tray_mask_rough))
         upper_food = food_mask_full.copy()
@@ -481,21 +485,21 @@ def detect_bento_areas(img_bgr: np.ndarray) -> dict:
             left_right_edge  = leftmost[0] + leftmost[2]
             second_left_edge = second[0]
             candidate = (left_right_edge + second_left_edge) / 2
-            low_lim  = tx + tw * 0.22
-            high_lim = tx + tw * 0.50
+            low_lim  = tx + tw * 0.34
+            high_lim = tx + tw * 0.48
             split_x = int(max(low_lim, min(high_lim, candidate)))
 
         # Step 6: 下右エリア
         lr_x1 = rx + rw
-        lr_x2 = tx + tw - inset
+        lr_x2 = tx + tw - inset_right
         if lr_x2 - lr_x1 < tw * 0.15:
             lr_x1 = tx + int(tw * 0.63)
-            lr_x2 = tx + tw - inset
+            lr_x2 = tx + tw - inset_right
 
         return {
-            "上左（小おかず）": (int(up_y1), int(up_y2), int(tx + inset), int(split_x)),
-            "上右（大おかず）": (int(up_y1), int(up_y2), int(split_x),    int(tx + tw - inset)),
-            "下右（小おかず）": (int(lo_y1), int(lo_y2), int(lr_x1),      int(lr_x2)),
+            "上左（小おかず）": (int(up_y1), int(up_y2), int(tx + inset),       int(split_x)),
+            "上右（大おかず）": (int(up_y1), int(up_y2), int(split_x),          int(tx + tw - inset_right)),
+            "下右（小おかず）": (int(lo_y1), int(lo_y2), int(lr_x1),            int(lr_x2)),
         }
 
     # --- ごはん検出失敗: 輪郭ベースのフォールバック ---
