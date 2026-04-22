@@ -263,6 +263,72 @@ def overlay_tray_mask(img_pil: Image.Image, areas: dict, area_masks: dict) -> Im
     return Image.alpha_composite(output, overlay).convert('RGB')
 
 
+# --- Claude Vision による空き率推定（高精度）---
+def compute_emptiness_vision(client, roi_pil: Image.Image, area_name: str) -> dict:
+    """
+    Claude Vision (Opus 4.7) を使って ROI の空き率を意味的に判定する。
+
+    CV によるピクセル比較では、食材間の隙間・仕切り壁・リム・影を
+    「空き」として誤検出するが、Vision は対象を意味的に理解するため
+    「食材で覆われていないトレー露出部」を精度良く推定できる。
+
+    返り値: {"emptiness_pct": float, "reason": str} / 失敗時 None
+    """
+    try:
+        b64 = pil_to_base64(roi_pil)
+        threshold_txt = "15%" if "大おかず" in area_name else "20%"
+        prompt = f"""この画像はお弁当の 1 つのコンパートメント（{area_name}エリア）の切り出しです。
+このエリア内で、**赤いトレー底面が食材やカップで覆われずに露出している部分の割合**を 0〜100 の数値（%）で精密に推定してください。
+
+判定ルール:
+- 食材本体・カップライナー・葉飾り（バラン）・卵焼き等は「充填済み」
+- コンパートメントを区切る壁（リム）は「構造部分」なのでカウントしない
+- 赤いトレー底面が見えている部分のみを「空き」としてカウント
+- 端の影や細いリムは除外し、実質的な空きスペースのみを評価
+
+判定閾値: このエリアは空き率 {threshold_txt} 以上で NG です。
+
+必ず以下の JSON 形式のみで回答してください（説明文や前置きは一切不要）:
+{{"emptiness_pct": 数値, "reason": "簡潔な根拠(20字以内)"}}"""
+
+        msg = client.messages.create(
+            model="claude-opus-4-7",
+            max_tokens=400,
+            thinking={"type": "adaptive"},
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64",
+                                                  "media_type": "image/jpeg", "data": b64}},
+                    {"type": "text", "text": prompt}
+                ]
+            }]
+        )
+        # thinking ブロックをスキップして text ブロックを取得
+        text = ""
+        for block in msg.content:
+            if getattr(block, "type", "") == "text":
+                text = block.text
+                break
+        if not text:
+            return None
+
+        import re
+        match = re.search(r'\{.*?\}', text, re.DOTALL)
+        if not match:
+            return None
+        data = json.loads(match.group(0))
+        pct = float(data.get("emptiness_pct", 0))
+        pct = max(0.0, min(100.0, pct))
+        return {
+            "emptiness_pct": round(pct, 1),
+            "reason": f"Vision: {data.get('reason', '')}",
+        }
+    except Exception as e:
+        print(f"[Vision ERROR {area_name}] {type(e).__name__}: {e}")
+        return None
+
+
 # --- AI 総評（全体コメント用のみ Claude を使用）---
 def analyze_overall_with_claude(client, img: Image.Image, results: list) -> str:
     summary = "\n".join([f"- {r['name']}: 空き率{r['emptiness_pct']:.1f}%" for r in results])
@@ -822,13 +888,29 @@ else:
                 continue
             x1c, y1c, x2c, y2c = clamped
             roi = img_orig.crop((x1c, y1c, x2c, y2c))
-            analysis = compute_emptiness_cv(roi, name, ref_lab_stats=ref_lab_stats, tolerance=tolerance)
-            area_masks[name] = analysis.pop("tray_mask", None)
+
+            # CV でマスクを生成（黄色オーバーレイ表示用）
+            cv_analysis = compute_emptiness_cv(roi, name, ref_lab_stats=ref_lab_stats, tolerance=tolerance)
+            area_masks[name] = cv_analysis.pop("tray_mask", None)
+
+            # Vision API で空き率を意味的に判定（高精度）
+            vision_analysis = compute_emptiness_vision(client, roi, name)
+
+            if vision_analysis is not None:
+                pct = vision_analysis["emptiness_pct"]
+                reason = vision_analysis["reason"]
+                conf = "high"
+            else:
+                # Vision 失敗時は CV 結果にフォールバック
+                pct = cv_analysis["emptiness_pct"]
+                reason = f"CVフォールバック: {cv_analysis['reason']}"
+                conf = cv_analysis["confidence"]
+
             results.append({
                 "name": name,
-                "emptiness_pct": analysis["emptiness_pct"],
-                "confidence": analysis["confidence"],
-                "reason": analysis["reason"],
+                "emptiness_pct": pct,
+                "confidence": conf,
+                "reason": reason,
             })
 
         progress_bar.progress(80, text="全体評価を生成中...")
