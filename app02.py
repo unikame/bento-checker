@@ -160,10 +160,12 @@ def compute_emptiness_cv(roi_pil: Image.Image, area_name: str,
     - リファレンス学習済 → LAB 色空間での距離ベース判定
     - 未学習 → HSV 範囲ベース判定（フォールバック）
 
-    小おかずエリア（カップが置かれる）では、カップ同士の間に必ず発生する
-    構造的な小ギャップを除外するため、食材マスクに対して MORPH_CLOSE を適用する。
+    小おかずと大おかずで、食材/カップ間の構造的な小ギャップを吸収するため
+    食材マスクに MORPH_CLOSE を適用する。過剰補正しないよう kernel は控えめ。
+    さらに大おかずではコンパートメント壁（リム）を狭く除外する。
     """
     roi_bgr = cv2.cvtColor(np.array(roi_pil), cv2.COLOR_RGB2BGR)
+    h_roi, w_roi = roi_bgr.shape[:2]
 
     if ref_lab_stats is not None:
         roi_lab = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -183,10 +185,18 @@ def compute_emptiness_cv(roi_pil: Image.Image, area_name: str,
     kernel_small = np.ones((3, 3), np.uint8)
     tray_mask = cv2.morphologyEx(tray_mask, cv2.MORPH_OPEN, kernel_small)
 
-    # --- 小おかずエリア専用: カップ間の構造ギャップを吸収 ---
+    # --- 構造ギャップを埋める MORPH_CLOSE ---
+    # 本物の空きは残すため kernel は控えめに
     if "小おかず" in area_name:
-        h_roi, w_roi = tray_mask.shape[:2]
-        bridge_size = max(25, int(min(h_roi, w_roi) * 0.15))
+        # 小おかずはカップ同士の構造ギャップが大きい
+        bridge_size = max(21, int(min(h_roi, w_roi) * 0.12))
+    elif "大おかず" in area_name:
+        # 食材間の小〜中ギャップのみ吸収（≒ 5% 程度）
+        bridge_size = max(9, int(min(h_roi, w_roi) * 0.05))
+    else:
+        bridge_size = 0
+
+    if bridge_size > 0:
         if bridge_size % 2 == 0:
             bridge_size += 1
         food_mask = cv2.bitwise_not(tray_mask)
@@ -194,7 +204,21 @@ def compute_emptiness_cv(roi_pil: Image.Image, area_name: str,
         food_bridged = cv2.morphologyEx(food_mask, cv2.MORPH_CLOSE, kernel_bridge)
         tray_mask = cv2.bitwise_not(food_bridged)
 
+    # --- 大おかず: コンパートメント壁（リム）を狭く除外 ---
+    # 外縁に必ず写るリムがノイズ的に空き判定を膨らませるのを防ぐ
     total_px = tray_mask.size
+    if "大おかず" in area_name:
+        pad_x     = max(3, int(w_roi * 0.025))
+        pad_y_top = max(3, int(h_roi * 0.025))
+        pad_y_bot = max(3, int(h_roi * 0.025))
+        tray_mask[:pad_y_top, :] = 0
+        tray_mask[-pad_y_bot:, :] = 0
+        tray_mask[:, :pad_x] = 0
+        tray_mask[:, -pad_x:] = 0
+        inner_w = max(1, w_roi - 2 * pad_x)
+        inner_h = max(1, h_roi - pad_y_top - pad_y_bot)
+        total_px = inner_w * inner_h
+
     tray_px = int(np.sum(tray_mask > 0))
     pct = (tray_px / total_px * 100.0) if total_px > 0 else 0.0
     pct = max(pct, 0.0)
@@ -296,15 +320,17 @@ def _fallback_areas(w: int, h: int) -> dict:
 
 def detect_bento_areas(img_bgr: np.ndarray) -> dict:
     """
-    標準的なお弁当レイアウト（上段=小・大、下段=ごはん・小）を想定して
-    3 エリアを返す。
+    標準レイアウト（上段=小・大、下段=ごはん・小）想定で 3 エリアを返す。
 
-    アプローチ:
-      1. トレー全体の外周 bbox を検出
-      2. トレー内の「ごはん」領域 (大きな白〜薄色領域) を検出
-      3. ごはんの上端を上下段の境界、ごはんの右端を下段の左右境界に使う
-      4. 上段の左右分割点は、上段内の食材輪郭位置から推定
-      5. どこかで失敗したら従来の輪郭ベース/固定比率にフォールバック
+    手順:
+      1. トレー全体の外周 bbox を取得
+      2. トレー左下の「ごはん」を厳密な HSV + 領域限定で検出
+         （S<55, V>160 かつ トレー左 65% × 下 60% のみ）
+         - 他エリアの白系食材（玉子焼き、衣付きフライ）との混同を防ぐ
+      3. ごはん bbox の妥当性チェック（位置・アスペクト比）
+      4. ごはん上端 = 上下段境界、ごはん右端 = 下右エリア左端
+      5. 上段の左右分割点は、上段内の食材輪郭の水平ギャップから推定
+      6. どこかで失敗したら輪郭ベース/固定比率にフォールバック
     """
     h, w = img_bgr.shape[:2]
 
@@ -327,15 +353,17 @@ def detect_bento_areas(img_bgr: np.ndarray) -> dict:
     inside_tray = np.zeros_like(tray_closed)
     cv2.drawContours(inside_tray, [tray_c], -1, 255, -1)
 
-    # Step 2: ごはん領域検出 (下半分の大きな白っぽい領域)
+    # Step 2: ごはん領域検出（厳密条件 + 領域制限）
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    rice_mask = cv2.inRange(hsv, np.array([0, 0, 120]), np.array([180, 75, 255]))
+    rice_mask = cv2.inRange(hsv, np.array([0, 0, 160]), np.array([180, 55, 255]))
     rice_mask = cv2.bitwise_and(rice_mask, inside_tray)
 
-    bottom_region = np.zeros_like(rice_mask)
-    y_start = ty + int(th * 0.35)
-    bottom_region[y_start: ty + th, tx: tx + tw] = 255
-    rice_mask = cv2.bitwise_and(rice_mask, bottom_region)
+    # トレー左 65% × 下 60% に限定（ごはんは左下が定位置）
+    bottom_left_region = np.zeros_like(rice_mask)
+    y_start = ty + int(th * 0.40)
+    x_end   = tx + int(tw * 0.65)
+    bottom_left_region[y_start: ty + th, tx: x_end] = 255
+    rice_mask = cv2.bitwise_and(rice_mask, bottom_left_region)
 
     rk = np.ones((15, 15), np.uint8)
     rice_mask = cv2.morphologyEx(rice_mask, cv2.MORPH_CLOSE, rk)
@@ -344,22 +372,31 @@ def detect_bento_areas(img_bgr: np.ndarray) -> dict:
     rice_contours, _ = cv2.findContours(rice_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     rice_contours = [c for c in rice_contours if cv2.contourArea(c) > tw * th * 0.06]
 
+    # Step 3: 妥当性チェック
+    rice_ok = False
+    rx = ry = rw = rh = 0
     if rice_contours:
         rice = max(rice_contours, key=cv2.contourArea)
         rx, ry, rw, rh = cv2.boundingRect(rice)
+        aspect = rw / max(rh, 1)
+        rice_rel_top  = (ry - ty) / max(th, 1)
+        rice_rel_left = (rx - tx) / max(tw, 1)
+        # ごはんは横長気味 + トレー左下に位置
+        if aspect >= 0.7 and rice_rel_top >= 0.30 and rice_rel_left <= 0.15:
+            rice_ok = True
 
+    if rice_ok:
         inset = max(2, int(min(tw, th) * 0.015))
 
-        # 上下段の y 境界
+        # Step 4: 上下段境界（ごはん上端に合わせる）
         up_y1 = ty + inset
         up_y2 = ry
         lo_y1 = ry
         lo_y2 = ty + th - inset
 
-        # Step 3: 上段の左右分割点
-        split_x = tx + int(tw * 0.37)  # 既定値
+        # Step 5: 上段の左右分割点
+        split_x = tx + int(tw * 0.37)  # 既定値（小:大 = 37:63）
 
-        # 上段内の食材輪郭を見つけて分割点を推定
         food_mask_full = cv2.bitwise_and(inside_tray, cv2.bitwise_not(tray_mask_rough))
         upper_food = food_mask_full.copy()
         upper_food[:up_y1, :] = 0
@@ -372,23 +409,20 @@ def detect_bento_areas(img_bgr: np.ndarray) -> dict:
         uc, _ = cv2.findContours(upper_food, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         uc_bbox = [cv2.boundingRect(c) for c in uc if cv2.contourArea(c) > tw * th * 0.012]
         if len(uc_bbox) >= 2:
-            # 左端 bbox (cx が最小) とそれ以外の最も近い bbox の境界から split を推定
             uc_bbox_sorted = sorted(uc_bbox, key=lambda b: b[0] + b[2] / 2)
             leftmost = uc_bbox_sorted[0]
             second   = uc_bbox_sorted[1]
-            # 左端 bbox の右端 と 2 番目 bbox の左端 の中点
-            left_right_edge = leftmost[0] + leftmost[2]
+            left_right_edge  = leftmost[0] + leftmost[2]
             second_left_edge = second[0]
             candidate = (left_right_edge + second_left_edge) / 2
             low_lim  = tx + tw * 0.22
             high_lim = tx + tw * 0.50
             split_x = int(max(low_lim, min(high_lim, candidate)))
 
-        # Step 4: 下右エリア (ごはん右端〜トレー右端)
+        # Step 6: 下右エリア
         lr_x1 = rx + rw
         lr_x2 = tx + tw - inset
         if lr_x2 - lr_x1 < tw * 0.15:
-            # ごはんが右端まで届いている → 既定比率に戻す
             lr_x1 = tx + int(tw * 0.63)
             lr_x2 = tx + tw - inset
 
@@ -480,7 +514,6 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list, area
     overlay = Image.new('RGBA', (w, h), (0, 0, 0, 0))
     ov_draw = ImageDraw.Draw(overlay)
 
-    # 座標を事前にクランプして使い回す（2回目のループでも同じ値を使う）
     clamped_areas = {}
     for name, (y1, y2, x1, x2) in areas.items():
         if name == "下左（ごはん）":
@@ -490,7 +523,6 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list, area
             continue
         clamped_areas[name] = clamped
 
-    # 半透明塗りつぶし（エリア全体）
     for name, (x1, y1, x2, y2) in clamped_areas.items():
         r = result_map.get(name, {})
         pct = r.get("emptiness_pct", 0)
@@ -528,7 +560,6 @@ def draw_results_on_image(img_pil: Image.Image, areas: dict, results: list, area
         ty = cy - th // 2 - by0
         pad = max(14, int(font_size * 0.45))
 
-        # テキスト背景（クランプして描画）
         bg_x1 = max(0, min(cx - tw//2 - pad, w - 1))
         bg_y1 = max(0, min(cy - th//2 - pad, h - 1))
         bg_x2 = max(bg_x1 + 1, min(cx + tw//2 + pad, w - 1))
@@ -600,7 +631,6 @@ with st.sidebar:
             st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # --- リファレンス画像（空容器）の管理 ---
     st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
     st.markdown('<div style="font-size:0.7rem; color:#888; letter-spacing:2px; margin-bottom:6px;">REFERENCE (空容器)</div>', unsafe_allow_html=True)
 
@@ -644,7 +674,6 @@ with st.sidebar:
             except Exception as e:
                 st.error(f"登録失敗: {e}")
 
-    # --- 色許容度スライダー ---
     st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
     st.markdown('<div style="font-size:0.7rem; color:#888; letter-spacing:2px; margin-bottom:4px;">色許容度 (TOLERANCE)</div>', unsafe_allow_html=True)
     st.markdown('<div style="font-size:0.68rem; color:#666; margin-bottom:6px;">小さい→厳密判定 / 大きい→甘い判定</div>', unsafe_allow_html=True)
@@ -654,7 +683,6 @@ with st.sidebar:
         label_visibility="collapsed"
     )
 
-    # --- 判定閾値の表示 ---
     st.markdown('<hr style="border-color: #333; margin: 12px 0;">', unsafe_allow_html=True)
     st.markdown(f'''<div style="font-size:0.7rem; color:#888; letter-spacing:2px; margin-bottom:6px;">判定閾値 (NG)</div>
     <div style="font-size:0.78rem; color:#ccc; line-height:1.7;">
@@ -695,7 +723,6 @@ st.markdown('<div class="subtitle-block">CV-Based Filling Analysis</div>', unsaf
 client = get_anthropic_client()
 history = load_shared_history()
 
-# --- 履歴詳細表示 ---
 if st.session_state.selected_idx is not None and st.session_state.selected_idx < len(history):
     data = history[st.session_state.selected_idx]
     col_img, col_info = st.columns([1.3, 0.7])
@@ -747,7 +774,6 @@ if st.session_state.selected_idx is not None and st.session_state.selected_idx <
             st.session_state.selected_idx = None
             st.rerun()
 
-# --- 新規スキャン ---
 else:
     up = st.file_uploader(
         "お弁当の写真をアップロード",
@@ -787,7 +813,6 @@ else:
             img_w, img_h = img_orig.size
             clamped = clamp_rect(y1, y2, x1, x2, img_w, img_h)
             if clamped is None:
-                # 無効な座標→計測不能
                 results.append({
                     "name": name,
                     "emptiness_pct": 0.0,
@@ -824,7 +849,6 @@ else:
         try:
             output_pil = draw_results_on_image(img_orig, areas, results, area_masks=area_masks)
         except Exception as e:
-            # 描画に失敗しても処理は継続（元画像を保存）
             print(f"[DRAW ERROR] {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
