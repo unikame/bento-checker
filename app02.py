@@ -11,7 +11,7 @@ import json
 import io
 import re
 
-# --- 1. APIキーの設定 (新しく作成したキーをここに貼り付け) ---
+# --- 1. APIキーの設定 ---
 ANTHROPIC_API_KEY = "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"
 
 st.set_page_config(page_title="Bento Checker Pro", layout="wide", page_icon="🍱")
@@ -21,7 +21,7 @@ SAVE_DIR = "history_images"
 REFERENCE_FILE = "reference_empty.jpg"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
-# --- 2. スタイル (バグ修正版) ---
+# --- 2. スタイル (視認性向上) ---
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Space+Mono:wght@700&display=swap');
@@ -31,15 +31,14 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; color: #1a1a1a;
 .metric-card { background: white; border-radius: 15px; padding: 15px 20px; box-shadow: 0 2px 12px rgba(0,0,0,0.05); margin-bottom: 10px; border-left: 5px solid #ccc; }
 .metric-card.pass { border-left-color: #2ecc71; }
 .metric-card.fail { border-left-color: #e74c3c; }
-.metric-value { font-family: 'Space Mono', monospace; font-size: 1.5rem; font-weight: 700; color: #1a1a1a; }
+.metric-value { font-family: 'Space Mono', monospace; font-size: 1.5rem; font-weight: 700; }
 .status-badge { display: inline-block; padding: 6px 20px; border-radius: 999px; font-family: 'Space Mono', monospace; font-weight: 700; font-size: 1.2rem; }
 .status-badge.pass { background: #d4f5e2; color: #1a8a4a; }
 .status-badge.fail { background: #fde8e8; color: #c0392b; }
-/* 左メニューのボタンと文字色の修正 */
+/* サイドバーとボタンのスタイル */
 [data-testid="stSidebar"] { background: #1a1a1a !important; color: #f0ede8 !important; }
 [data-testid="stSidebar"] .stButton button { background-color: #333 !important; color: white !important; border: 1px solid #444 !important; }
-[data-testid="stSidebar"] .stMarkdown p { color: #f0ede8 !important; }
-[data-testid="stSidebar"] .stSlider label { color: #f0ede8 !important; }
+.stButton>button { border-radius: 10px; height: 3em; width: 100%; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -54,20 +53,23 @@ def normalize_image(img_bgr):
     res = np.clip(res, 0, 255).astype(np.uint8)
     lab = cv2.cvtColor(res, cv2.COLOR_BGR2LAB)
     l, a, b_chan = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     return cv2.cvtColor(cv2.merge((clahe.apply(l), a, b_chan)), cv2.COLOR_LAB2BGR)
 
-# --- 4. 解析ロジック ---
+# --- 4. 解析コア ---
 @st.cache_resource
 def get_anthropic_client():
     if "sk-ant" not in ANTHROPIC_API_KEY:
-        st.error("有効な Anthropic API キーを入力してください。")
         return None
     return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 def pil_to_base64(img: Image.Image) -> str:
+    # メモリ節約のためリサイズして圧縮
+    max_size = 1000
+    if max(img.size) > max_size:
+        img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=85)
+    img.save(buf, format="JPEG", quality=80)
     return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 def compute_emptiness_hybrid(client, roi_pil, area_name, ref_stats, tolerance):
@@ -86,18 +88,18 @@ def compute_emptiness_hybrid(client, roi_pil, area_name, ref_stats, tolerance):
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5,5), np.uint8))
     cv_pct = round((np.sum(mask > 0) / mask.size) * 100.0, 1)
 
-    ai_pct, reason = cv_pct, "CV判定"
+    ai_pct, reason = cv_pct, "画像解析による判定"
     if client:
         try:
             b64 = pil_to_base64(roi_pil)
             msg = client.messages.create(
                 model="claude-3-5-sonnet-20241022",
-                max_tokens=200,
-                messages=[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64}},{"type":"text","text":"Return JSON ONLY: {\"pct\": number, \"reason\": \"string\"}"}]}]
+                max_tokens=300,
+                messages=[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":b64}},{"type":"text","text":"Analyze tray emptiness. Return JSON ONLY: {\"pct\": number, \"reason\": \"string\"}"}]}]
             )
             data = json.loads(re.search(r'\{.*\}', msg.content[0].text).group())
             ai_pct, reason = data.get("pct", cv_pct), data.get("reason", "AI判定")
-        except: pass
+        except Exception: pass
 
     return {"pct": round(cv_pct * 0.3 + ai_pct * 0.7, 1), "reason": reason, "mask": mask}
 
@@ -110,59 +112,74 @@ with st.sidebar:
     if st.button("＋ 新規スキャン", use_container_width=True):
         st.session_state.selected_idx = None
         st.rerun()
-    st.markdown("### 設定")
-    up_ref = st.file_uploader("空容器登録(精度向上)", type=['jpg', 'png'])
+    st.markdown("---")
+    up_ref = st.file_uploader("空容器登録(精度向上)", type=['jpg', 'png', 'jpeg'])
     if up_ref:
-        Image.open(up_ref).save(REFERENCE_FILE)
-        st.rerun()
+        Image.open(up_ref).convert("RGB").save(REFERENCE_FILE)
+        st.success("リファレンスを保存しました")
     tolerance = st.slider("色許容度", 10.0, 50.0, 25.0)
 
 # 履歴読み込み
 history = pd.read_csv(DB_FILE).to_dict('records') if os.path.exists(DB_FILE) else []
 
 if st.session_state.selected_idx is None:
-    up = st.file_uploader("お弁当の写真をアップロード", type=['jpg', 'png'])
+    up = st.file_uploader("お弁当の写真をアップロードして「解析開始」を押してください", type=['jpg', 'png', 'jpeg'])
+    
     if up:
-        img_orig = Image.open(up).convert("RGB")
-        img_np = np.array(img_orig)
-        h, w = img_np.shape[:2]
-        # 解析エリアの定義 (右上, 左上, 右下)
-        area_defs = {
-            "右上（メイン）": (int(h*0.1), int(h*0.48), int(w*0.45), int(w*0.95)),
-            "左上（副菜）": (int(h*0.1), int(h*0.48), int(w*0.05), int(w*0.45)),
-            "右下（副菜）": (int(h*0.5), int(h*0.95), int(w*0.5), int(w*0.95))
-        }
-        
-        ref_stats = None
-        if os.path.exists(REFERENCE_FILE):
-            ref_b = cv2.imread(REFERENCE_FILE)
-            ref_lab = cv2.cvtColor(normalize_image(ref_b), cv2.COLOR_BGR2LAB)
-            ref_stats = {"mean": np.mean(ref_lab, axis=(0,1)).tolist()}
+        # 解析開始ボタンを明示的に配置
+        if st.button("🚀 解析を開始する", type="primary"):
+            with st.spinner("AIと画像処理で解析中..."):
+                img_orig = Image.open(up).convert("RGB")
+                img_np = np.array(img_orig)
+                h, w = img_np.shape[:2]
+                
+                # エリア定義 (右上, 左上, 右下)
+                area_defs = {
+                    "右上（メイン）": (int(h*0.08), int(h*0.48), int(w*0.45), int(w*0.95)),
+                    "左上（副菜）": (int(h*0.08), int(h*0.48), int(w*0.05), int(w*0.45)),
+                    "右下（副菜）": (int(h*0.5), int(h*0.95), int(w*0.52), int(w*0.95))
+                }
+                
+                ref_stats = None
+                if os.path.exists(REFERENCE_FILE):
+                    ref_b = cv2.imread(REFERENCE_FILE)
+                    if ref_b is not None:
+                        ref_lab = cv2.cvtColor(normalize_image(ref_b), cv2.COLOR_BGR2LAB)
+                        ref_stats = {"mean": np.mean(ref_lab, axis=(0,1)).tolist()}
 
-        results, draw_np = [], img_np.copy()
-        for name, (y1, y2, x1, x2) in area_defs.items():
-            roi = img_orig.crop((x1, y1, x2, y2))
-            res = compute_emptiness_hybrid(client, roi, name, ref_stats, tolerance)
-            results.append(f"{name}@{res['pct']}") # 区切りを@に変更
-            m = res["mask"]
-            target = draw_np[y1:y1+m.shape[0], x1:x1+m.shape[1]]
-            target[m > 0] = target[m > 0] * 0.5 + np.array([255, 230, 0]) * 0.5
-            
-        path = f"{SAVE_DIR}/res_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
-        Image.fromarray(draw_np).save(path)
-        avg_v = np.mean([float(r.split("@")[1]) for r in results])
-        new_rec = {"time": datetime.now().strftime("%m/%d %H:%M"), "status": "PASS" if avg_v < 15 else "FAIL", "img_path": path, "avg_emptiness": round(avg_v, 1), "detail_text": " / ".join(results)}
-        pd.DataFrame([new_rec]).to_csv(DB_FILE, mode='a', header=not os.path.exists(DB_FILE), index=False)
-        st.session_state.selected_idx = len(history)
-        st.rerun()
+                results, draw_np = [], img_np.copy()
+                for name, (y1, y2, x1, x2) in area_defs.items():
+                    roi = img_orig.crop((x1, y1, x2, y2))
+                    res = compute_emptiness_hybrid(client, roi, name, ref_stats, tolerance)
+                    results.append(f"{name}@{res['pct']}")
+                    m = res["mask"]
+                    # 抽出部分を黄色でオーバーレイ
+                    target = draw_np[y1:y1+m.shape[0], x1:x1+m.shape[1]]
+                    target[m > 0] = target[m > 0] * 0.5 + np.array([255, 230, 0]) * 0.5
+                
+                path = f"{SAVE_DIR}/res_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
+                Image.fromarray(draw_np).save(path)
+                
+                avg_v = np.mean([float(r.split("@")[1]) for r in results])
+                new_rec = {
+                    "time": datetime.now().strftime("%m/%d %H:%M"),
+                    "status": "PASS" if avg_v < 15 else "FAIL",
+                    "img_path": path,
+                    "avg_emptiness": round(avg_v, 1),
+                    "detail_text": " / ".join(results)
+                }
+                pd.DataFrame([new_rec]).to_csv(DB_FILE, mode='a', header=not os.path.exists(DB_FILE), index=False)
+                st.session_state.selected_idx = len(load_shared_history()) - 1
+                st.rerun()
 else:
+    # 履歴詳細画面
     data = history[st.session_state.selected_idx]
     c1, c2 = st.columns([1.3, 0.7])
-    with c1: st.image(data['img_path'], use_container_width=True)
+    with c1:
+        st.image(data['img_path'], use_container_width=True)
     with c2:
         st.markdown(f'<div class="status-badge {data["status"].lower()}">{data["status"]}</div>', unsafe_allow_html=True)
         st.markdown(f'<div class="metric-card"><small>平均空き率</small><div class="metric-value">{data["avg_emptiness"]}%</div></div>', unsafe_allow_html=True)
-        # エラー箇所修正：区切り文字@で分割
         for part in data['detail_text'].split(" / "):
             if "@" in part:
                 nm, pct = part.split("@")
@@ -170,3 +187,7 @@ else:
         if st.button("← 戻る"):
             st.session_state.selected_idx = None
             st.rerun()
+
+def load_shared_history():
+    if os.path.exists(DB_FILE): return pd.read_csv(DB_FILE).to_dict('records')
+    return []
