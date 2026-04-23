@@ -46,24 +46,25 @@ async function analyzeArea(b64, areaName) {
   const isMain = areaName.includes("メイン") || areaName.includes("右上");
   const prompt = isMain ? `You are inspecting the MAIN section (右上メイン) of a bento tray.
 
-SPECIAL RULE FOR MAIN SECTION:
-Count ALL empty space including gaps around/between paper cups.
-The main section should be TIGHTLY packed with food.
+TASK: Estimate the percentage (0-100) of empty space in this section.
 
-Look at the image carefully:
-- Is the entire section filled edge-to-edge with food and cups?
-- Is there visible red/brown tray space anywhere (sides, between cups, around cups)?
+WHAT TO COUNT AS EMPTY:
+- Visible red/brown tray surface (no food, no cup on it)
+- Space around paper cups where you can see the tray
+- Gaps between food items where tray is visible
 
-SCORING:
-- Fully packed, no visible tray = 0-5%
-- Small visible tray space = 10%
-- Noticeable empty area on one side = 15-20%
-- Large empty area (like right side mostly empty) = 20-30%
-- Half empty = 40%+
+WHAT NOT TO COUNT:
+- Food items themselves
+- The tray frame/border
 
-Look specifically at LEFT, RIGHT, TOP, BOTTOM edges for empty tray visible.
+BE PRECISE:
+- Give an accurate estimate based on what you see
+- Different images should get different scores
+- If the section is completely full with food and cups touching edges: close to 0%
+- If significant tray surface is visible: higher percentage
+- Estimate the actual visible empty ratio
 
-Return ONLY JSON: {"pct": number, "reason": "Japanese description of what empty space you see"}`
+Return ONLY JSON: {"pct": number, "reason": "Japanese description of what empty space you see, including WHERE the gaps are"}`
   : `You are inspecting "${areaName}" section of a bento tray (not main section).
 
 RULES:
