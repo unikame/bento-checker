@@ -44,32 +44,31 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
 
 async function analyzeArea(b64, areaName) {
   const isMain = areaName.includes("メイン") || areaName.includes("右上");
-  const prompt = isMain ? `You are a STRICT quality inspector for the MAIN section (右上メイン) of a bento tray.
+  const prompt = isMain ? `You are inspecting the MAIN section (右上メイン) of a bento tray.
 
-TASK: Estimate the EXACT percentage (0-100) of empty/visible tray space.
+TASK: Estimate the percentage (0-100) of empty/visible tray space.
 
-BE VERY STRICT. The main section must be TIGHTLY PACKED with food.
-Even small visible tray areas are UNACCEPTABLE and should be counted.
+COUNT AS EMPTY:
+- Visible red/brown tray surface (areas with no food and no cup)
+- Noticeable gaps around cups
+- Empty areas between food items
 
-COUNT AS EMPTY (strictly):
-- ANY visible red/brown tray surface, even small areas
-- Gaps between paper cups and tray edges
-- Space around cups where tray shows through
-- Gaps between food items
-- Any area where food is not physically present
+DO NOT count:
+- Tiny unavoidable gaps (too small to matter)
+- The tray frame/border
 
-STRICT SCORING (aim HIGH, not low):
-- Completely packed with zero visible tray → 0-5%
-- Tiny gaps visible here and there → 10-15%
-- Small visible tray strip on one side → 18-22%
-- Clear empty area on one edge → 25-30%
-- Large empty region (side or corner mostly empty) → 35-45%
-- Food pushed to one side → 45-60%
+SCORING (be balanced, not too strict, not too lenient):
+- Fully packed, no visible tray → 0-5%
+- Very minor visible tray → 8-12%
+- Noticeable gap on one side → 14-18%
+- Clear empty area → 20-25%
+- Large empty region → 28-35%
+- Food pushed to one side, big empty area → 35-45%
 
-IMPORTANT: When in doubt, ROUND UP. Be strict, not lenient.
-Your estimate should be HIGHER than a casual observer would say.
+Your estimate should reflect what you actually see. Different images MUST get different scores.
+Do not always give the same number - vary your estimate based on the actual image.
 
-Return ONLY JSON: {"pct": <your_strict_estimate>, "reason": "日本語で具体的にどこに空きスペースがあるか詳しく説明"}`
+Return ONLY JSON: {"pct": <estimate>, "reason": "日本語で空きスペースの場所と程度を具体的に説明"}`
   : `You are inspecting "${areaName}" section of a bento tray (not main section).
 
 RULES:
