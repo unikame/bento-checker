@@ -44,28 +44,33 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
 }
 
 async function analyzeArea(b64, areaName, apiKey) {
-  const prompt = `You are a strict quality inspector analyzing a section of a Japanese bento box tray called "${areaName}".
+  const prompt = `You are a strict quality inspector analyzing "${areaName}" in a Japanese bento box tray.
 
-Your job: Estimate the percentage of EMPTY space where food SHOULD be placed but is NOT.
+TASK: Estimate the percentage of empty space where food SHOULD be but is NOT.
 
-=== DO NOT COUNT as empty (these are always acceptable) ===
-- Gaps between paper/foil cups (おかずカップ) — normal and unavoidable
-- Space around the outside edges/border of the cups
-- The tray frame or outer border
-- Left side or bottom edge of compartment where cups naturally don't reach
-- Any space that is structurally unavoidable due to cup placement
+=== STEP 1: Identify if there is ANY food placed DIRECTLY on the tray (not in a cup) ===
+- Look carefully: is there ANY food item sitting directly on the red tray surface?
+- Examples of direct placement: tamagoyaki (egg roll), korokke (croquette), rice, meat/fish placed flat on tray
+- If you see even ONE item placed directly (not in a cup), proceed to STEP 2
+- If ALL food is inside cups only, proceed to STEP 3
 
-=== DO COUNT as empty ===
-- Areas in the compartment where food is placed DIRECTLY on the tray (not in a cup), and there is a clear visible gap beside or around that food
-- Example: if tamagoyaki or a cutlet is placed directly and there is a clearly open space next to it with visible red tray bottom, that counts
-- Example: if the right side of a compartment has a large open area with no food and no cup, that counts
+=== STEP 2: If there IS directly-placed food ===
+COUNT as empty:
+- Large open areas beside or around the directly-placed food where red tray is visible
+- Example: if food is pushed to the left and the entire right side is empty red tray → count that gap
+- A gap of ~1/4 compartment width = 15-20%
+- A gap of ~1/3 compartment width = 20-25%
+- Round UP when in doubt
 
-=== HOW TO SCORE ===
-- If ALL food is in cups → score is 0% (cup gaps don't count)
-- If directly-placed food has a large gap on one side → score 15-25%
-- A gap about 1/4 of compartment width beside direct food = ~20%
-- A gap about 1/3 of compartment width beside direct food = ~25-30%
-- When in doubt about direct-placed food gaps, round UP
+DO NOT count:
+- Normal small gaps between cups (these are structural)
+
+=== STEP 3: If ALL food is in cups (no direct placement) ===
+Score = 0%
+Reason: "すべておかずカップ内に配置されており、カップ間の隙間は構造上避けられないため問題なし"
+
+=== CRITICAL FOR 右上（メイン） ===
+This section often has directly-placed food. Look for large empty spaces on the RIGHT SIDE or any side. If there is a big visible red area with no food and no cup, that is a gap that MUST be counted as 15-25%.
 
 Respond ONLY with valid JSON: {"pct": number, "reason": "string in Japanese"}`;
 
