@@ -43,7 +43,7 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
   });
 }
 
-async function analyzeArea(b64, areaName, apiKey) {
+async function analyzeArea(b64, areaName) {
   const isMain = areaName.includes("メイン") || areaName.includes("右上");
   const prompt = isMain ? `You are inspecting the MAIN section (右上メイン) of a bento tray.
 
@@ -140,7 +140,7 @@ export default function BentoCheckerPro() {
   }, [handleFile]);
 
   const analyze = useCallback(async () => {
-    if (!imgFile || !apiKey) return;
+    if (!imgFile) return;
     setAnalyzing(true);
     setError(null);
     setProgress(0);
@@ -154,7 +154,7 @@ export default function BentoCheckerPro() {
 
         const [y1r, y2r, x1r, x2r] = CROP_DEFS[i];
         const b64 = await cropFileToBase64(imgFile, x1r, y1r, x2r, y2r);
-        const res = await analyzeArea(b64, AREAS[i].name, apiKey);
+        const res = await analyzeArea(b64, AREAS[i].name);
         areaResults.push({ ...AREAS[i], pct: res.pct ?? 0, reason: res.reason ?? "" });
         setProgress(Math.round(((i + 1) / AREAS.length) * 100));
       }
@@ -179,7 +179,7 @@ export default function BentoCheckerPro() {
       setProgress(0);
       setProgressLabel("");
     }
-  }, [apiKey, imgFile, imgSrc]);
+  }, [imgFile, imgSrc]);
 
   const reset = () => {
     setImgSrc(null);
