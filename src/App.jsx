@@ -44,11 +44,20 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
 }
 
 async function analyzeArea(b64, areaName, apiKey) {
-  const prompt = `You are analyzing a section of a Japanese bento box tray called "${areaName}".
-Estimate the percentage of empty/unfilled space (visible tray bottom, gaps, exposed plastic).
-CRITICAL: If you see red/orange plastic bottom or wide empty gaps next to food items, return AT LEAST 15-20%.
-Overestimate gaps rather than underestimate.
-Respond ONLY with valid JSON: {"pct": number, "reason": "string (Japanese OK)"}`;
+  const prompt = `You are a strict quality inspector analyzing a section of a Japanese bento box tray called "${areaName}".
+
+Your job: Estimate the percentage of EMPTY space where food SHOULD be placed but is NOT.
+
+RULES:
+- Count empty space = visible tray bottom, gaps between foods, areas with no food
+- Do NOT count the tray border/frame/edge as empty (only the food placement area inside)
+- Be strict: even a small gap on one side of the compartment counts
+- If food is pushed to one side leaving visible space on the other side, that IS empty space
+- A side gap of about 1/4 of the compartment width = approximately 20-25% empty
+- A side gap of about 1/5 of the compartment width = approximately 15-20% empty
+- NEVER underestimate: when in doubt, round UP
+
+Respond ONLY with valid JSON: {"pct": number, "reason": "string in Japanese"}`;
 
   const res = await fetch("/api/analyze", {
     method: "POST",
