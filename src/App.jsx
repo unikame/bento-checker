@@ -9,7 +9,7 @@ const AREAS = [
 const CROP_DEFS = [
   [0.07, 0.38, 0.37, 0.87],  // 右上（メイン）: y1, y2, x1, x2
   [0.07, 0.38, 0.15, 0.37],  // 左上（副菜A）
-  [0.48, 0.93, 0.60, 0.87],  // 右下（副菜B）
+  [0.40, 0.88, 0.66, 0.87],  // 右下（副菜B）
 ];
 
 async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
@@ -274,8 +274,8 @@ export default function BentoCheckerPro() {
 
           {imgSrc && (
             <div style={{ textAlign: "center" }}>
-              <div style={{ background: C.card, borderRadius: 20, padding: 20, boxShadow: "0 2px 10px rgba(0,0,0,0.05)" }}>
-                <div style={{ position: "relative", display: "inline-block", width: "70%" }}>
+              <div style={{ background: C.card, borderRadius: 20, padding: 12, boxShadow: "0 2px 10px rgba(0,0,0,0.05)" }}>
+                <div style={{ position: "relative", display: "inline-block", width: "60%" }}>
                   <img
                     src={imgSrc}
                     alt="bento"
@@ -385,19 +385,21 @@ export default function BentoCheckerPro() {
               </div>
 
               {/* Area Cards */}
-              {results.areas.map((area) => {
+              {results.areas.map((area, i) => {
                 const fail = area.pct >= 15;
+                const frameColors = ["#ff3b30", "#0071e3", "#34c759"]; // 赤・青・緑
+                const frameColor = frameColors[i];
                 return (
                   <div key={area.key} style={{
                     background: C.card,
                     border: `1px solid ${C.border}`,
-                    borderLeft: `6px solid ${fail ? C.danger : C.success}`,
+                    borderLeft: `6px solid ${frameColor}`,
                     borderRadius: 16,
                     padding: "20px 24px",
                     marginBottom: 16,
                     boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
                   }}>
-                    <div style={{ fontSize: 14, color: C.textSub, marginBottom: 6, fontWeight: 500 }}>{area.name}</div>
+                    <div style={{ fontSize: 14, color: frameColor, marginBottom: 6, fontWeight: 600 }}>{area.name}</div>
                     <div style={{ fontSize: 24, fontWeight: 700, color: fail ? C.danger : C.success, marginBottom: 10, letterSpacing: "-0.02em" }}>
                       {area.pct}%
                     </div>
