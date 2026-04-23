@@ -50,12 +50,10 @@ CRITICAL: If you see red/orange plastic bottom or wide empty gaps next to food i
 Overestimate gaps rather than underestimate.
 Respond ONLY with valid JSON: {"pct": number, "reason": "string (Japanese OK)"}`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+  const res = await fetch("/api/analyze", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
       model: "claude-opus-4-6",
