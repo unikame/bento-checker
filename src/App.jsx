@@ -80,7 +80,7 @@ Return ONLY JSON: {"pct": number, "reason": "Japanese text"}`;
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
       max_tokens: 300,
-      temperature: 1.0,
+      ...(isMain ? { temperature: 1.0 } : {}),
       messages: [{
         role: "user",
         content: [
