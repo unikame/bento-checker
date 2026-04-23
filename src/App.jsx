@@ -44,29 +44,21 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
 }
 
 async function analyzeArea(b64, areaName, apiKey) {
-  const prompt = `CRITICAL: Focus on DIRECTLY-PLACED food (not decorative cups).
+  const prompt = `Analyze "${areaName}" bento section for empty space.
 
-You are analyzing "${areaName}" in a bento tray.
+RULES:
+1. If food is placed DIRECTLY on red tray (Hamburg, korokke, rice, tamagoyaki):
+   - Count large empty gaps beside the food as 15-25%
+   - Example: Food on left, big empty red space on right = 20%
 
-STEP 1 - Is there food placed DIRECTLY on the tray surface?
-Look carefully: Hamburg steak, korokke, tamagoyaki, rice = DIRECT placement
-Food only in paper cups = NOT direct placement
+2. If ALL food is only in paper cups:
+   - Return 0% (cup gaps are normal)
 
-STEP 2 - IF there IS directly-placed food:
-Measure empty tray space beside/around it:
-- Large empty area on one side = 15-25%
-- 1/4 section width gap = ~18%
-- 1/3 section width gap = ~25%
+3. DO NOT count: tiny gaps between cups
 
-DO NOT count: small gaps between paper cups
+For 右上（メイン）: Usually has directly-placed items. Look for large red empty areas.
 
-STEP 3 - IF food is ONLY in cups (no direct placement):
-Return: {"pct": 0, "reason": "すべておかずカップ内のため問題なし"}
-
-CRITICAL FOR 右上（メイン）:
-This section usually has Hamburg/korokke placed directly. If you see a large empty red area with no food, count it as 15-25%.
-
-Respond ONLY with valid JSON: {"pct": number, "reason": "string in Japanese"}`;
+JSON only: {"pct": number, "reason": "Japanese text"}`;
 
   const res = await fetch("/api/analyze", {
     method: "POST",
@@ -74,7 +66,7 @@ Respond ONLY with valid JSON: {"pct": number, "reason": "string in Japanese"}`;
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: "claude-opus-4-6",
+      model: "claude-sonnet-4-20250514",
       max_tokens: 300,
       messages: [
         {
