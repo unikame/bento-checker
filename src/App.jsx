@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 
 const AREAS = [
   { name: "右上（メイン）", key: "main" },
@@ -44,31 +44,39 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
 }
 
 async function analyzeArea(b64, areaName, apiKey) {
-  const prompt = `You are inspecting "${areaName}" in a bento tray.
+  const isMain = areaName.includes("メイン") || areaName.includes("右上");
+  const prompt = isMain ? `You are inspecting the MAIN section (右上メイン) of a bento tray.
 
-STEP 1: Describe what you see
-Look at the image. What food items do you see? Are they in paper cups or placed directly on the red/brown tray?
+SPECIAL RULE FOR MAIN SECTION:
+Count ALL empty space including gaps around/between paper cups.
+The main section should be TIGHTLY packed with food.
 
-STEP 2: Check for direct placement
-Is there ANY food sitting directly on the tray surface (not inside a decorative paper cup)?
-- Hamburg steak, korokke (croquette), tamagoyaki (egg roll), rice = DIRECT on tray
-- Food only in colorful paper cups = NOT direct
+Look at the image carefully:
+- Is the entire section filled edge-to-edge with food and cups?
+- Is there visible red/brown tray space anywhere (sides, between cups, around cups)?
 
-STEP 3: If DIRECT placement exists:
-Look for LARGE EMPTY RED/BROWN TRAY AREAS with no food and no cup.
-- If you see a big empty gap on the right side, left side, or anywhere = 15-25%
-- Small gap = ~15%
-- Medium gap = ~20%
-- Large gap = ~25%
+SCORING:
+- Fully packed, no visible tray = 0-5%
+- Small visible tray space = 10%
+- Noticeable empty area on one side = 15-20%
+- Large empty area (like right side mostly empty) = 20-30%
+- Half empty = 40%+
 
-STEP 4: If ONLY cups (no direct food):
-Return: {"pct": 0, "reason": "すべておかずカップ内に入っており問題なし"}
+Look specifically at LEFT, RIGHT, TOP, BOTTOM edges for empty tray visible.
 
-IMPORTANT:
-- Paper cup gaps are normal, don't count them
-- Only count empty tray where food SHOULD be placed directly
+Return ONLY JSON: {"pct": number, "reason": "Japanese description of what empty space you see"}`
+  : `You are inspecting "${areaName}" section of a bento tray (not main section).
 
-Return ONLY JSON: {"pct": number, "reason": "what you see in Japanese"}`;
+RULES:
+1. If food is placed DIRECTLY on tray (not in cups):
+   - Count large empty gaps as 15-25%
+
+2. If ALL food is only in paper cups:
+   - Return 0% (cup gaps are normal and acceptable)
+
+3. DO NOT count small gaps between cups
+
+Return ONLY JSON: {"pct": number, "reason": "Japanese text"}`;
 
   const res = await fetch("/api/analyze", {
     method: "POST",
@@ -114,6 +122,7 @@ export default function BentoCheckerPro() {
   const [error, setError] = useState(null);
   const [history, setHistory] = useState([]);
   const [viewHistory, setViewHistory] = useState(false);
+  const [autoAnalyze, setAutoAnalyze] = useState(false);
   const fileRef = useRef(null);
 
   const handleFile = useCallback((file) => {
@@ -123,6 +132,8 @@ export default function BentoCheckerPro() {
     setError(null);
     const url = URL.createObjectURL(file);
     setImgSrc(url);
+    // 自動で解析開始
+    setTimeout(() => setAutoAnalyze(true), 100);
   }, []);
 
   const handleDrop = useCallback((e) => {
@@ -179,6 +190,13 @@ export default function BentoCheckerPro() {
     setResults(null);
     setError(null);
   };
+
+  useEffect(() => {
+    if (autoAnalyze && imgFile) {
+      setAutoAnalyze(false);
+      analyze();
+    }
+  }, [autoAnalyze, imgFile, analyze]);
 
   return (
     <div style={{ minHeight: "100vh", background: "#1a1510", fontFamily: "'Georgia', serif", color: "#f0ede8" }}>
@@ -264,13 +282,8 @@ export default function BentoCheckerPro() {
               )}
 
               {!analyzing && !results && (
-                <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-                  <button
-                    onClick={analyze}
-                    disabled={!apiKeySet}
-                    style={{ flex: 1, background: apiKeySet ? "#e8c97a" : "#3a2e1e", color: apiKeySet ? "#1a1510" : "#5a4a30", border: "none", borderRadius: 8, padding: "12px 0", cursor: apiKeySet ? "pointer" : "not-allowed", fontFamily: "monospace", fontWeight: 700, fontSize: 15, letterSpacing: 1 }}
-                  >🔍 解析開始</button>
-                  <button onClick={reset} style={{ background: "transparent", border: "1px solid #3a2e1e", color: "#7a6a50", borderRadius: 8, padding: "12px 18px", cursor: "pointer", fontFamily: "monospace" }}>✕</button>
+                <div style={{ display: "flex", gap: 10, marginTop: 14, justifyContent: "center" }}>
+                  <button onClick={reset} style={{ background: "transparent", border: "1px solid #3a2e1e", color: "#7a6a50", borderRadius: 8, padding: "10px 24px", cursor: "pointer", fontFamily: "monospace" }}>✕ キャンセル</button>
                 </div>
               )}
 
