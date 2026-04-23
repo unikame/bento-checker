@@ -63,7 +63,7 @@ SCORING:
 
 Look specifically at LEFT, RIGHT, TOP, BOTTOM edges for empty tray visible.
 
-Return ONLY JSON: {"pct": number, "reason": "Japanese description"}`
+Return ONLY JSON: {"pct": number, "reason": "Japanese description of what empty space you see"}`
   : `You are inspecting "${areaName}" section of a bento tray (not main section).
 
 RULES:
