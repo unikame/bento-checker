@@ -7,9 +7,9 @@ const AREAS = [
 ];
 
 const CROP_DEFS = [
-  [0.35, 0.08, 0.95, 0.48],
-  [0.05, 0.08, 0.35, 0.48],
-  [0.52, 0.5,  0.95, 0.95],
+  [0.08, 0.48, 0.35, 0.95],  // 右上メイン: y1, y2, x1, x2
+  [0.08, 0.48, 0.05, 0.35],  // 左上副菜A
+  [0.5,  0.95, 0.52, 0.95],  // 右下副菜B
 ];
 
 // OffscreenCanvas で File を直接クロップ → base64（CORSを完全回避）
@@ -44,21 +44,31 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
 }
 
 async function analyzeArea(b64, areaName, apiKey) {
-  const prompt = `Analyze "${areaName}" bento section for empty space.
+  const prompt = `You are inspecting "${areaName}" in a bento tray.
 
-RULES:
-1. If food is placed DIRECTLY on red tray (Hamburg, korokke, rice, tamagoyaki):
-   - Count large empty gaps beside the food as 15-25%
-   - Example: Food on left, big empty red space on right = 20%
+STEP 1: Describe what you see
+Look at the image. What food items do you see? Are they in paper cups or placed directly on the red/brown tray?
 
-2. If ALL food is only in paper cups:
-   - Return 0% (cup gaps are normal)
+STEP 2: Check for direct placement
+Is there ANY food sitting directly on the tray surface (not inside a decorative paper cup)?
+- Hamburg steak, korokke (croquette), tamagoyaki (egg roll), rice = DIRECT on tray
+- Food only in colorful paper cups = NOT direct
 
-3. DO NOT count: tiny gaps between cups
+STEP 3: If DIRECT placement exists:
+Look for LARGE EMPTY RED/BROWN TRAY AREAS with no food and no cup.
+- If you see a big empty gap on the right side, left side, or anywhere = 15-25%
+- Small gap = ~15%
+- Medium gap = ~20%
+- Large gap = ~25%
 
-For 右上（メイン）: Usually has directly-placed items. Look for large red empty areas.
+STEP 4: If ONLY cups (no direct food):
+Return: {"pct": 0, "reason": "すべておかずカップ内に入っており問題なし"}
 
-JSON only: {"pct": number, "reason": "Japanese text"}`;
+IMPORTANT:
+- Paper cup gaps are normal, don't count them
+- Only count empty tray where food SHOULD be placed directly
+
+Return ONLY JSON: {"pct": number, "reason": "what you see in Japanese"}`;
 
   const res = await fetch("/api/analyze", {
     method: "POST",
@@ -94,7 +104,7 @@ JSON only: {"pct": number, "reason": "Japanese text"}`;
 
 export default function BentoCheckerPro() {
   const [apiKey, setApiKey] = useState(() => localStorage.getItem('apiKey') || "");
-  const [apiKeySet, setApiKeySet] = useState(false);
+  const [apiKeySet, setApiKeySet] = useState(true);
   const [imgSrc, setImgSrc] = useState(null);
   const [imgFile, setImgFile] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
@@ -134,7 +144,7 @@ export default function BentoCheckerPro() {
         setProgressLabel(`${AREAS[i].name} を解析中...`);
         setProgress(Math.round((i / AREAS.length) * 100));
 
-        const [x1r, y1r, x2r, y2r] = CROP_DEFS[i];
+        const [y1r, y2r, x1r, x2r] = CROP_DEFS[i];
         const b64 = await cropFileToBase64(imgFile, x1r, y1r, x2r, y2r);
         const res = await analyzeArea(b64, AREAS[i].name, apiKey);
         areaResults.push({ ...AREAS[i], pct: res.pct ?? 0, reason: res.reason ?? "" });
@@ -233,7 +243,7 @@ export default function BentoCheckerPro() {
 
           {imgSrc && (
             <div>
-              <img src={imgSrc} alt="bento" style={{ width: "50%", borderRadius: 10, border: "1px solid #3a2e1e", display: "block" }} />
+              <img src={imgSrc} alt="bento" style={{ width: "50%", borderRadius: 10, border: "1px solid #3a2e1e", display: "block", margin: "0 auto" }} />
 
               {analyzing && (
                 <div style={{ marginTop: 16 }}>
