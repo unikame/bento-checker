@@ -93,7 +93,7 @@ JSON only: {"pct": number, "reason": "Japanese text"}`;
 }
 
 export default function BentoCheckerPro() {
-  const [apiKey, setApiKey] = useState("");
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem('apiKey') || "");
   const [apiKeySet, setApiKeySet] = useState(false);
   const [imgSrc, setImgSrc] = useState(null);
   const [imgFile, setImgFile] = useState(null);
@@ -199,11 +199,11 @@ export default function BentoCheckerPro() {
                   placeholder="sk-ant-..."
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && apiKey.startsWith("sk-") && setApiKeySet(true)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && apiKey.startsWith("sk-")) { localStorage.setItem('apiKey', apiKey); setApiKeySet(true); } }}
                   style={{ flex: 1, background: "#1a1510", border: "1px solid #3a2e1e", color: "#f0ede8", borderRadius: 6, padding: "8px 12px", fontSize: 13, fontFamily: "monospace", outline: "none" }}
                 />
                 <button
-                  onClick={() => apiKey.startsWith("sk-") && setApiKeySet(true)}
+                  onClick={() => { if (apiKey.startsWith("sk-")) { localStorage.setItem('apiKey', apiKey); setApiKeySet(true); } }}
                   style={{ background: "#e8c97a", color: "#1a1510", border: "none", borderRadius: 6, padding: "8px 16px", cursor: "pointer", fontFamily: "monospace", fontWeight: 700, fontSize: 13 }}
                 >SET</button>
               </div>
@@ -213,7 +213,7 @@ export default function BentoCheckerPro() {
           {apiKeySet && (
             <div style={{ fontSize: 12, color: "#4a8a5a", fontFamily: "monospace", marginBottom: 16, display: "flex", justifyContent: "space-between" }}>
               <span>✓ API KEY SET</span>
-              <span onClick={() => { setApiKeySet(false); setApiKey(""); }} style={{ color: "#5a4a30", cursor: "pointer", textDecoration: "underline" }}>変更</span>
+              <span onClick={() => { setApiKeySet(false); setApiKey(""); }} style={{ color: "#f0ede8", cursor: "pointer", textDecoration: "underline" }}>変更</span>
             </div>
           )}
 
@@ -226,14 +226,14 @@ export default function BentoCheckerPro() {
             >
               <div style={{ fontSize: 48, marginBottom: 12 }}>📷</div>
               <div style={{ color: "#a89060", fontSize: 14, marginBottom: 6 }}>お弁当の写真をドロップ</div>
-              <div style={{ color: "#5a4a30", fontSize: 12 }}>または クリックして選択</div>
+              <div style={{ color: "#f0ede8", fontSize: 12 }}>または クリックして選択</div>
               <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files[0])} />
             </div>
           )}
 
           {imgSrc && (
             <div>
-              <img src={imgSrc} alt="bento" style={{ width: "100%", borderRadius: 10, border: "1px solid #3a2e1e", display: "block" }} />
+              <img src={imgSrc} alt="bento" style={{ width: "50%", borderRadius: 10, border: "1px solid #3a2e1e", display: "block" }} />
 
               {analyzing && (
                 <div style={{ marginTop: 16 }}>
@@ -265,7 +265,7 @@ export default function BentoCheckerPro() {
               )}
 
               {results && (
-                <button onClick={reset} style={{ width: "100%", marginTop: 14, background: "transparent", border: "1px solid #3a2e1e", color: "#a89060", borderRadius: 8, padding: "10px 0", cursor: "pointer", fontFamily: "monospace", fontSize: 13 }}>
+                <button onClick={reset} style={{ width: "50%", marginTop: 14, background: "transparent", border: "1px solid #3a2e1e", color: "#a89060", borderRadius: 8, padding: "10px 0", cursor: "pointer", fontFamily: "monospace", fontSize: 13 }}>
                   ＋ 新規スキャン
                 </button>
               )}
@@ -311,7 +311,7 @@ export default function BentoCheckerPro() {
                     <div style={{ background: "#1a1510", borderRadius: 4, height: 4, marginBottom: 8 }}>
                       <div style={{ width: `${Math.min(area.pct, 100)}%`, height: "100%", background: fail ? "#c03030" : "#30a060", borderRadius: 4, transition: "width 0.5s" }} />
                     </div>
-                    <div style={{ fontSize: 11, color: "#5a4a30", lineHeight: 1.5 }}>{area.reason}</div>
+                    <div style={{ fontSize: 11, color: "#f0ede8", lineHeight: 1.5 }}>{area.reason}</div>
                   </div>
                 );
               })}
@@ -330,8 +330,8 @@ export default function BentoCheckerPro() {
                     <span style={{ fontFamily: "monospace", fontWeight: 700, color: rec.status === "FAIL" ? "#e05050" : "#40c070", fontSize: 14 }}>{rec.status}</span>
                     <span style={{ fontFamily: "monospace", fontSize: 18, color: "#e8c97a" }}>{rec.avg}%</span>
                   </div>
-                  <img src={rec.imgSrc} alt="" style={{ width: "100%", borderRadius: 6, marginBottom: 6 }} />
-                  <div style={{ fontSize: 11, color: "#5a4a30", fontFamily: "monospace" }}>{rec.time}</div>
+                  <img src={rec.imgSrc} alt="" style={{ width: "50%", borderRadius: 6, marginBottom: 6 }} />
+                  <div style={{ fontSize: 11, color: "#f0ede8", fontFamily: "monospace" }}>{rec.time}</div>
                 </div>
               ))}
             </div>
