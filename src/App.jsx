@@ -44,23 +44,32 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
 
 async function analyzeArea(b64, areaName) {
   const isMain = areaName.includes("メイン") || areaName.includes("右上");
-  const prompt = isMain ? `You are inspecting the MAIN section (右上メイン) of a bento tray.
+  const prompt = isMain ? `You are a STRICT quality inspector for the MAIN section (右上メイン) of a bento tray.
 
 TASK: Estimate the EXACT percentage (0-100) of empty/visible tray space.
 
-CRITICAL: Your estimate should VARY based on what you actually see. Do not default to 15%.
+BE VERY STRICT. The main section must be TIGHTLY PACKED with food.
+Even small visible tray areas are UNACCEPTABLE and should be counted.
 
-Examples of different situations:
-- Completely packed, no visible tray at all → 0-3%
-- Very tight with tiny gaps → 5-8%
-- Small gap on one edge → 10-13%
-- Noticeable empty strip → 17-22%
-- Food pushed to one side, big empty area → 25-35%
-- Nearly half empty → 40-50%
+COUNT AS EMPTY (strictly):
+- ANY visible red/brown tray surface, even small areas
+- Gaps between paper cups and tray edges
+- Space around cups where tray shows through
+- Gaps between food items
+- Any area where food is not physically present
 
-Look carefully and give your BEST estimate based on the ACTUAL amount of red/brown tray visible.
+STRICT SCORING (aim HIGH, not low):
+- Completely packed with zero visible tray → 0-5%
+- Tiny gaps visible here and there → 10-15%
+- Small visible tray strip on one side → 18-22%
+- Clear empty area on one edge → 25-30%
+- Large empty region (side or corner mostly empty) → 35-45%
+- Food pushed to one side → 45-60%
 
-Return ONLY JSON: {"pct": <your_actual_estimate>, "reason": "日本語で具体的にどこが空いているか"}`
+IMPORTANT: When in doubt, ROUND UP. Be strict, not lenient.
+Your estimate should be HIGHER than a casual observer would say.
+
+Return ONLY JSON: {"pct": <your_strict_estimate>, "reason": "日本語で具体的にどこに空きスペースがあるか詳しく説明"}`
   : `You are inspecting "${areaName}" section of a bento tray (not main section).
 
 RULES:
