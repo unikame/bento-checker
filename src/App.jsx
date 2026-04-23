@@ -122,7 +122,6 @@ export default function BentoCheckerPro() {
   const [error, setError] = useState(null);
   const [history, setHistory] = useState([]);
   const [viewHistory, setViewHistory] = useState(false);
-  const [autoAnalyze, setAutoAnalyze] = useState(false);
   const fileRef = useRef(null);
 
   const handleFile = useCallback((file) => {
@@ -132,8 +131,6 @@ export default function BentoCheckerPro() {
     setError(null);
     const url = URL.createObjectURL(file);
     setImgSrc(url);
-    // 自動で解析開始
-    setTimeout(() => setAutoAnalyze(true), 100);
   }, []);
 
   const handleDrop = useCallback((e) => {
@@ -192,11 +189,10 @@ export default function BentoCheckerPro() {
   };
 
   useEffect(() => {
-    if (autoAnalyze && imgFile) {
-      setAutoAnalyze(false);
+    if (imgFile && !results && !analyzing && !error) {
       analyze();
     }
-  }, [autoAnalyze, imgFile, analyze]);
+  }, [imgFile]);
 
   return (
     <div style={{ minHeight: "100vh", background: "#1a1510", fontFamily: "'Georgia', serif", color: "#f0ede8" }}>
