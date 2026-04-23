@@ -275,11 +275,51 @@ export default function BentoCheckerPro() {
           {imgSrc && (
             <div style={{ textAlign: "center" }}>
               <div style={{ background: C.card, borderRadius: 20, padding: 20, boxShadow: "0 2px 10px rgba(0,0,0,0.05)" }}>
-                <img
-                  src={imgSrc}
-                  alt="bento"
-                  style={{ maxWidth: "70%", borderRadius: 12, display: "block", margin: "0 auto" }}
-                />
+                <div style={{ position: "relative", display: "inline-block", maxWidth: "70%" }}>
+                  <img
+                    src={imgSrc}
+                    alt="bento"
+                    style={{ width: "100%", borderRadius: 12, display: "block" }}
+                  />
+                  {/* 3つのエリア枠オーバーレイ */}
+                  {CROP_DEFS.map((def, i) => {
+                    const [y1r, y2r, x1r, x2r] = def;
+                    const colors = ["#ff3b30", "#0071e3", "#34c759"];
+                    const labels = ["右上（メイン）", "左上（副菜A）", "右下（副菜B）"];
+                    const pct = results?.areas?.[i]?.pct;
+                    return (
+                      <div
+                        key={i}
+                        style={{
+                          position: "absolute",
+                          left: `${x1r * 100}%`,
+                          top: `${y1r * 100}%`,
+                          width: `${(x2r - x1r) * 100}%`,
+                          height: `${(y2r - y1r) * 100}%`,
+                          border: `3px solid ${colors[i]}`,
+                          borderRadius: 8,
+                          boxSizing: "border-box",
+                          pointerEvents: "none",
+                        }}
+                      >
+                        <div style={{
+                          position: "absolute",
+                          top: -26,
+                          left: -3,
+                          background: colors[i],
+                          color: "white",
+                          fontSize: 11,
+                          fontWeight: 600,
+                          padding: "2px 8px",
+                          borderRadius: 4,
+                          whiteSpace: "nowrap",
+                        }}>
+                          {labels[i]}{pct !== undefined ? ` ${pct}%` : ""}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
               {analyzing && (
