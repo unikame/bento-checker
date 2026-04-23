@@ -44,33 +44,10 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
 
 async function analyzeArea(b64, areaName) {
   const isMain = areaName.includes("メイン") || areaName.includes("右上");
-  const prompt = isMain ? `あなたは弁当の盛り付け検査員です。右上メイン区画の空きスペース率を厳密に判定してください。
 
-【手順】
-STEP 1: 画像を注意深く観察し、以下を具体的に記述してください
-- 食材は何が見えるか？
-- 食材と食材の間に隙間はあるか？
-- 食材と区画の縁の間に隙間はあるか？
-- 赤茶色のトレー底面が見える場所はあるか？具体的にどこか？
-
-STEP 2: 見えた空きスペースの合計面積を区画全体に対する割合で計算
-
-【数値の目安】
-- 0-3%: 完全に食材で覆われ、トレーがまったく見えない
-- 5-8%: 角や縁にごくわずかな隙間がある程度
-- 10-15%: 小さな隙間が複数、または1辺に細い空き
-- 17-22%: 片側に明確な空きスペースがある（食材が片寄っている）
-- 25-35%: 大きな空きエリアがある
-- 40%以上: 半分近くが空いている
-
-【重要な注意】
-- 同じ画像なら同じ数値、違う画像なら違う数値を出してください
-- 15%を毎回返すのは禁止です
-- 空きが少ない画像は10%未満、多い画像は20%以上など、メリハリをつけてください
-- "見えたまま"を正確に評価してください
-
-Return ONLY JSON: {"pct": <正確な数値>, "reason": "日本語で何が見えて、どこにどれくらいの空きがあるか具体的に"}`
-  : `You are inspecting "${areaName}" section of a bento tray (not main section).
+  if (!isMain) {
+    // 副菜はシンプルなプロンプト
+    const prompt = `You are inspecting "${areaName}" section of a bento tray (not main section).
 
 RULES:
 1. If food is placed DIRECTLY on tray (not in cups):
@@ -83,33 +60,127 @@ RULES:
 
 Return ONLY JSON: {"pct": number, "reason": "Japanese text"}`;
 
-  const res = await fetch("/api/analyze", {
+    const res = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 300,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
+            { type: "text", text: prompt },
+          ],
+        }],
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.error?.message || `API error ${res.status}`);
+    }
+
+    const data = await res.json();
+    const text = data.content?.[0]?.text || "{}";
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error("JSON not found");
+    return JSON.parse(match[0]);
+  }
+
+  // メインは2段階判定
+  // STEP 1: 観察（数値を出さない）
+  const observePrompt = `右上メイン区画の画像を観察してください。
+以下を日本語で具体的に答えてください（数値は出さないこと）:
+
+1. どの食材が見えるか？
+2. 食材の配置は？（中央/片寄り/等間隔など）
+3. 赤茶色のトレー底面が見える場所は？（上/下/左/右/どの部分にどのくらい）
+4. 食材同士の間に隙間はあるか？
+5. 全体の印象として「ぎっしり」「やや余裕あり」「明確な空きあり」「スカスカ」のどれか？
+
+JSONで返してください: {"observation": "詳細な観察結果", "overall": "ぎっしり|やや余裕あり|明確な空きあり|スカスカ"}`;
+
+  const obsRes = await fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 300,
-      ...(isMain ? { temperature: 1.0 } : {}),
+      max_tokens: 400,
       messages: [{
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
-          { type: "text", text: prompt },
+          { type: "text", text: observePrompt },
         ],
       }],
     }),
   });
 
-  if (!res.ok) {
-    const err = await res.json();
-    throw new Error(err.error?.message || `API error ${res.status}`);
+  if (!obsRes.ok) {
+    const err = await obsRes.json();
+    throw new Error(err.error?.message || "observation error");
   }
 
-  const data = await res.json();
-  const text = data.content?.[0]?.text || "{}";
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("JSON not found");
-  return JSON.parse(match[0]);
+  const obsData = await obsRes.json();
+  const obsText = obsData.content?.[0]?.text || "{}";
+  const obsMatch = obsText.match(/\{[\s\S]*\}/);
+  let observation = { observation: "", overall: "やや余裕あり" };
+  if (obsMatch) {
+    try { observation = JSON.parse(obsMatch[0]); } catch {}
+  }
+
+  // STEP 2: 観察結果に基づいてパーセンテージ決定（ルールベース＋AI補正）
+  const baseRange = {
+    "ぎっしり": [0, 5],
+    "やや余裕あり": [8, 15],
+    "明確な空きあり": [15, 28],
+    "スカスカ": [35, 50],
+  };
+  const range = baseRange[observation.overall] || [10, 20];
+
+  const decidePrompt = `先ほどあなたは以下のように観察しました:
+
+観察結果: ${observation.observation}
+全体評価: ${observation.overall}
+
+この観察結果に基づき、空きスペース率を${range[0]}〜${range[1]}%の範囲で、整数で正確に決定してください。
+"${observation.overall}"なら${range[0]}〜${range[1]}%が妥当です。
+観察内容の具体性に応じて、この範囲内で適切な値を選んでください。
+
+JSONで返してください: {"pct": <${range[0]}〜${range[1]}の整数>, "reason": "観察結果の要約（日本語100文字以内）"}`;
+
+  const decRes = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 300,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
+          { type: "text", text: decidePrompt },
+        ],
+      }],
+    }),
+  });
+
+  if (!decRes.ok) {
+    const err = await decRes.json();
+    throw new Error(err.error?.message || "decision error");
+  }
+
+  const decData = await decRes.json();
+  const decText = decData.content?.[0]?.text || "{}";
+  const decMatch = decText.match(/\{[\s\S]*\}/);
+  if (!decMatch) throw new Error("JSON not found in decision");
+  const result = JSON.parse(decMatch[0]);
+
+  // レンジ内にクリップ
+  result.pct = Math.max(range[0], Math.min(range[1], result.pct));
+
+  return result;
 }
 
 async function generateAdvice(areaResults) {
