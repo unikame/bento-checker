@@ -7,7 +7,7 @@ const AREAS = [
 ];
 
 const CROP_DEFS = [
-  [0.05, 0.47, 0.43, 0.93],  // 右上（メイン）: y1, y2, x1, x2
+  [0.05, 0.47, 0.43, 0.98],  // 右上（メイン）: y1, y2, x1, x2
   [0.05, 0.47, 0.18, 0.43],  // 左上（副菜A）
   [0.47, 0.95, 0.63, 0.93],  // 右下（副菜B）
 ];
@@ -255,9 +255,9 @@ export default function BentoCheckerPro() {
         </button>
       </div>
 
-      <div style={{ display: "flex", minHeight: "calc(100vh - 72px)", maxWidth: 1600, margin: "0 auto", padding: "32px", gap: 32 }}>
+      <div style={{ display: "flex", minHeight: "calc(100vh - 72px)", maxWidth: 1800, margin: "0 auto", padding: "32px", gap: 32 }}>
         {/* Left Panel */}
-        <div style={{ flex: "1 1 70%", minWidth: 0 }}>
+        <div style={{ flex: "1 1 78%", minWidth: 0 }}>
           {!imgSrc && (
             <div
               onDrop={handleDrop}
@@ -355,7 +355,7 @@ export default function BentoCheckerPro() {
         </div>
 
         {/* Right Panel */}
-        <div style={{ flex: "1 1 30%", minWidth: 360 }}>
+        <div style={{ flex: "1 1 22%", minWidth: 320 }}>
           {!results && !viewHistory && !analyzing && (
             <div style={{ color: C.textSub, textAlign: "center", marginTop: 100, fontSize: 16 }}>
               画像をアップロードして<br />解析を開始してください
