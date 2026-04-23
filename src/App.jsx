@@ -9,7 +9,7 @@ const AREAS = [
 const CROP_DEFS = [
   [0.07, 0.38, 0.37, 0.87],  // 右上（メイン）: y1, y2, x1, x2
   [0.07, 0.38, 0.15, 0.37],  // 左上（副菜A）
-  [0.40, 0.88, 0.66, 0.87],  // 右下（副菜B）
+  [0.50, 0.88, 0.66, 0.87],  // 右下（副菜B）
 ];
 
 async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
@@ -275,7 +275,7 @@ export default function BentoCheckerPro() {
           {imgSrc && (
             <div style={{ textAlign: "center" }}>
               <div style={{ background: C.card, borderRadius: 20, padding: 12, boxShadow: "0 2px 10px rgba(0,0,0,0.05)" }}>
-                <div style={{ position: "relative", display: "inline-block", width: "100%" }}>
+                <div style={{ position: "relative", display: "inline-block", width: "85%" }}>
                   <img
                     src={imgSrc}
                     alt="bento"
