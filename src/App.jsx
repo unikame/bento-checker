@@ -292,18 +292,18 @@ export default function BentoCheckerPro() {
                 background: results.status === "FAIL" ? C.dangerBg : C.successBg,
                 border: `2px solid ${results.status === "FAIL" ? C.danger : C.success}`,
                 borderRadius: 20,
-                padding: "28px 32px",
+                padding: "20px 28px",
                 marginBottom: 24,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between"
               }}>
-                <div style={{ fontSize: 44, fontWeight: 700, color: results.status === "FAIL" ? C.danger : C.success, letterSpacing: "-0.02em" }}>
+                <div style={{ fontSize: 32, fontWeight: 700, color: results.status === "FAIL" ? C.danger : C.success, letterSpacing: "-0.02em" }}>
                   {results.status}
                 </div>
                 <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: 13, color: C.textSub, marginBottom: 4 }}>平均空き率</div>
-                  <div style={{ fontSize: 40, fontWeight: 700, color: C.text, letterSpacing: "-0.02em" }}>{results.avg}%</div>
+                  <div style={{ fontSize: 12, color: C.textSub, marginBottom: 2 }}>平均空き率</div>
+                  <div style={{ fontSize: 28, fontWeight: 700, color: C.text, letterSpacing: "-0.02em" }}>{results.avg}%</div>
                 </div>
               </div>
 
@@ -321,7 +321,7 @@ export default function BentoCheckerPro() {
                     boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
                   }}>
                     <div style={{ fontSize: 14, color: C.textSub, marginBottom: 6, fontWeight: 500 }}>{area.name}</div>
-                    <div style={{ fontSize: 36, fontWeight: 700, color: fail ? C.danger : C.success, marginBottom: 12, letterSpacing: "-0.02em" }}>
+                    <div style={{ fontSize: 24, fontWeight: 700, color: fail ? C.danger : C.success, marginBottom: 10, letterSpacing: "-0.02em" }}>
                       {area.pct}%
                     </div>
                     <div style={{ background: "#f0f0f3", borderRadius: 4, height: 6, marginBottom: 14 }}>
