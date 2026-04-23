@@ -44,31 +44,32 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
 
 async function analyzeArea(b64, areaName) {
   const isMain = areaName.includes("メイン") || areaName.includes("右上");
-  const prompt = isMain ? `You are inspecting the MAIN section (右上メイン) of a bento tray.
+  const prompt = isMain ? `あなたは弁当の盛り付け検査員です。右上メイン区画の空きスペース率を厳密に判定してください。
 
-TASK: Estimate the percentage (0-100) of empty/visible tray space.
+【手順】
+STEP 1: 画像を注意深く観察し、以下を具体的に記述してください
+- 食材は何が見えるか？
+- 食材と食材の間に隙間はあるか？
+- 食材と区画の縁の間に隙間はあるか？
+- 赤茶色のトレー底面が見える場所はあるか？具体的にどこか？
 
-COUNT AS EMPTY:
-- Visible red/brown tray surface (areas with no food and no cup)
-- Noticeable gaps around cups
-- Empty areas between food items
+STEP 2: 見えた空きスペースの合計面積を区画全体に対する割合で計算
 
-DO NOT count:
-- Tiny unavoidable gaps (too small to matter)
-- The tray frame/border
+【数値の目安】
+- 0-3%: 完全に食材で覆われ、トレーがまったく見えない
+- 5-8%: 角や縁にごくわずかな隙間がある程度
+- 10-15%: 小さな隙間が複数、または1辺に細い空き
+- 17-22%: 片側に明確な空きスペースがある（食材が片寄っている）
+- 25-35%: 大きな空きエリアがある
+- 40%以上: 半分近くが空いている
 
-SCORING (be balanced, not too strict, not too lenient):
-- Fully packed, no visible tray → 0-5%
-- Very minor visible tray → 8-12%
-- Noticeable gap on one side → 14-18%
-- Clear empty area → 20-25%
-- Large empty region → 28-35%
-- Food pushed to one side, big empty area → 35-45%
+【重要な注意】
+- 同じ画像なら同じ数値、違う画像なら違う数値を出してください
+- 15%を毎回返すのは禁止です
+- 空きが少ない画像は10%未満、多い画像は20%以上など、メリハリをつけてください
+- "見えたまま"を正確に評価してください
 
-Your estimate should reflect what you actually see. Different images MUST get different scores.
-Do not always give the same number - vary your estimate based on the actual image.
-
-Return ONLY JSON: {"pct": <estimate>, "reason": "日本語で空きスペースの場所と程度を具体的に説明"}`
+Return ONLY JSON: {"pct": <正確な数値>, "reason": "日本語で何が見えて、どこにどれくらいの空きがあるか具体的に"}`
   : `You are inspecting "${areaName}" section of a bento tray (not main section).
 
 RULES:
