@@ -44,33 +44,27 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
 }
 
 async function analyzeArea(b64, areaName, apiKey) {
-  const prompt = `You are a strict quality inspector analyzing "${areaName}" in a Japanese bento box tray.
+  const prompt = `CRITICAL: Focus on DIRECTLY-PLACED food (not decorative cups).
 
-TASK: Estimate the percentage of empty space where food SHOULD be but is NOT.
+You are analyzing "${areaName}" in a bento tray.
 
-=== STEP 1: Identify if there is ANY food placed DIRECTLY on the tray (not in a cup) ===
-- Look carefully: is there ANY food item sitting directly on the red tray surface?
-- Examples of direct placement: tamagoyaki (egg roll), korokke (croquette), rice, meat/fish placed flat on tray
-- If you see even ONE item placed directly (not in a cup), proceed to STEP 2
-- If ALL food is inside cups only, proceed to STEP 3
+STEP 1 - Is there food placed DIRECTLY on the tray surface?
+Look carefully: Hamburg steak, korokke, tamagoyaki, rice = DIRECT placement
+Food only in paper cups = NOT direct placement
 
-=== STEP 2: If there IS directly-placed food ===
-COUNT as empty:
-- Large open areas beside or around the directly-placed food where red tray is visible
-- Example: if food is pushed to the left and the entire right side is empty red tray → count that gap
-- A gap of ~1/4 compartment width = 15-20%
-- A gap of ~1/3 compartment width = 20-25%
-- Round UP when in doubt
+STEP 2 - IF there IS directly-placed food:
+Measure empty tray space beside/around it:
+- Large empty area on one side = 15-25%
+- 1/4 section width gap = ~18%
+- 1/3 section width gap = ~25%
 
-DO NOT count:
-- Normal small gaps between cups (these are structural)
+DO NOT count: small gaps between paper cups
 
-=== STEP 3: If ALL food is in cups (no direct placement) ===
-Score = 0%
-Reason: "すべておかずカップ内に配置されており、カップ間の隙間は構造上避けられないため問題なし"
+STEP 3 - IF food is ONLY in cups (no direct placement):
+Return: {"pct": 0, "reason": "すべておかずカップ内のため問題なし"}
 
-=== CRITICAL FOR 右上（メイン） ===
-This section often has directly-placed food. Look for large empty spaces on the RIGHT SIDE or any side. If there is a big visible red area with no food and no cup, that is a gap that MUST be counted as 15-25%.
+CRITICAL FOR 右上（メイン）:
+This section usually has Hamburg/korokke placed directly. If you see a large empty red area with no food, count it as 15-25%.
 
 Respond ONLY with valid JSON: {"pct": number, "reason": "string in Japanese"}`;
 
