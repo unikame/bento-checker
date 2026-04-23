@@ -48,22 +48,24 @@ async function analyzeArea(b64, areaName, apiKey) {
 
 Your job: Estimate the percentage of EMPTY space where food SHOULD be placed but is NOT.
 
-RULES:
-1. DO NOT COUNT as empty:
-   - Gaps between paper/foil cups (おかずカップ) - cups always have gaps between them, this is normal
-   - The tray border/frame/outer edge
-   - Space inside cups that is filled with food
+=== DO NOT COUNT as empty (these are always acceptable) ===
+- Gaps between paper/foil cups (おかずカップ) — normal and unavoidable
+- Space around the outside edges/border of the cups
+- The tray frame or outer border
+- Left side or bottom edge of compartment where cups naturally don't reach
+- Any space that is structurally unavoidable due to cup placement
 
-2. DO COUNT as empty:
-   - Visible red/orange tray bottom in areas where food is placed directly (not in cups)
-   - Gaps beside directly-placed food items (like tamagoyaki, korokke placed directly on tray)
-   - Areas in the compartment with no food and no cup
+=== DO COUNT as empty ===
+- Areas in the compartment where food is placed DIRECTLY on the tray (not in a cup), and there is a clear visible gap beside or around that food
+- Example: if tamagoyaki or a cutlet is placed directly and there is a clearly open space next to it with visible red tray bottom, that counts
+- Example: if the right side of a compartment has a large open area with no food and no cup, that counts
 
-3. STRICTNESS:
-   - If a directly-placed food item has a visible gap beside it (e.g. tamagoyaki with space next to it), count that gap
-   - A gap of about 1/4 compartment width = ~20-25% empty
-   - A gap of about 1/5 compartment width = ~15-20% empty
-   - When in doubt, round UP
+=== HOW TO SCORE ===
+- If ALL food is in cups → score is 0% (cup gaps don't count)
+- If directly-placed food has a large gap on one side → score 15-25%
+- A gap about 1/4 of compartment width beside direct food = ~20%
+- A gap about 1/3 of compartment width beside direct food = ~25-30%
+- When in doubt about direct-placed food gaps, round UP
 
 Respond ONLY with valid JSON: {"pct": number, "reason": "string in Japanese"}`;
 
