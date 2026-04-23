@@ -7,7 +7,7 @@ const AREAS = [
 ];
 
 const CROP_DEFS = [
-  [0.05, 0.42, 0.40, 0.78],  // 右上（メイン）: y1, y2, x1, x2
+  [0.05, 0.42, 0.40, 0.92],  // 右上（メイン）: y1, y2, x1, x2
   [0.05, 0.42, 0.15, 0.40],  // 左上（副菜A）
   [0.42, 0.92, 0.62, 0.92],  // 右下（副菜B）
 ];
@@ -257,7 +257,7 @@ export default function BentoCheckerPro() {
 
       <div style={{ display: "flex", minHeight: "calc(100vh - 72px)", maxWidth: 1600, margin: "0 auto", padding: "32px", gap: 32 }}>
         {/* Left Panel */}
-        <div style={{ flex: "1 1 55%", minWidth: 0 }}>
+        <div style={{ flex: "1 1 70%", minWidth: 0 }}>
           {!imgSrc && (
             <div
               onDrop={handleDrop}
@@ -275,7 +275,7 @@ export default function BentoCheckerPro() {
           {imgSrc && (
             <div style={{ textAlign: "center" }}>
               <div style={{ background: C.card, borderRadius: 20, padding: 20, boxShadow: "0 2px 10px rgba(0,0,0,0.05)" }}>
-                <div style={{ position: "relative", display: "inline-block", maxWidth: "70%" }}>
+                <div style={{ position: "relative", display: "inline-block", maxWidth: "100%", width: "100%" }}>
                   <img
                     src={imgSrc}
                     alt="bento"
@@ -355,7 +355,7 @@ export default function BentoCheckerPro() {
         </div>
 
         {/* Right Panel */}
-        <div style={{ flex: "1 1 45%", minWidth: 420 }}>
+        <div style={{ flex: "1 1 30%", minWidth: 360 }}>
           {!results && !viewHistory && !analyzing && (
             <div style={{ color: C.textSub, textAlign: "center", marginTop: 100, fontSize: 16 }}>
               画像をアップロードして<br />解析を開始してください
