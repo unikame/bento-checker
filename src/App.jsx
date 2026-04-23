@@ -105,6 +105,38 @@ Return ONLY JSON: {"pct": number, "reason": "Japanese text"}`;
   return JSON.parse(match[0]);
 }
 
+async function generateAdvice(areaResults) {
+  const summary = areaResults.map(r => `${r.name}: ${r.pct}% (${r.reason})`).join("\n");
+  const prompt = `以下は日本のお弁当の3区画それぞれの空きスペース評価結果です:
+
+${summary}
+
+この結果を踏まえて、より見栄えのする盛り付け方法について、総評とアドバイスを日本語で100-150文字程度で述べてください。
+具体的な改善策（例: 副菜を足す、配置を変える、カップを大きくする等）を含めてください。
+JSONで返してください: {"advice": "総評とアドバイス"}`;
+
+  const res = await fetch("/api/analyze", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 400,
+      messages: [{ role: "user", content: prompt }],
+    }),
+  });
+
+  if (!res.ok) return "総評の生成に失敗しました";
+  const data = await res.json();
+  const text = data.content?.[0]?.text || "{}";
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return text;
+  try {
+    return JSON.parse(match[0]).advice || "";
+  } catch {
+    return text;
+  }
+}
+
 export default function BentoCheckerPro() {
   const [imgSrc, setImgSrc] = useState(null);
   const [imgFile, setImgFile] = useState(null);
@@ -153,6 +185,10 @@ export default function BentoCheckerPro() {
 
       const avg = areaResults.reduce((s, r) => s + r.pct, 0) / areaResults.length;
       const isFail = areaResults.some((r) => r.pct >= 15);
+
+      setProgressLabel("総評を生成中...");
+      const advice = await generateAdvice(areaResults);
+
       const record = {
         id: Date.now(),
         time: new Date().toLocaleString("ja-JP"),
@@ -160,6 +196,7 @@ export default function BentoCheckerPro() {
         areas: areaResults,
         avg: Math.round(avg * 10) / 10,
         status: isFail ? "FAIL" : "PASS",
+        advice,
       };
       setResults(record);
       setHistory((h) => [record, ...h]);
@@ -333,6 +370,24 @@ export default function BentoCheckerPro() {
               })}
 
               <div style={{ fontSize: 13, color: C.textSub, marginTop: 12, textAlign: "right" }}>{results.time}</div>
+
+              {/* 総評カード */}
+              {results.advice && (
+                <div style={{
+                  background: "#fffbea",
+                  border: `1px solid #f5d77a`,
+                  borderLeft: `6px solid #f5a623`,
+                  borderRadius: 16,
+                  padding: "20px 24px",
+                  marginTop: 20,
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+                }}>
+                  <div style={{ fontSize: 14, color: "#8a6d00", marginBottom: 10, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
+                    💡 総評・改善アドバイス
+                  </div>
+                  <div style={{ fontSize: 15, color: C.text, lineHeight: 1.7 }}>{results.advice}</div>
+                </div>
+              )}
             </div>
           )}
 
