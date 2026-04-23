@@ -257,7 +257,7 @@ export default function BentoCheckerPro() {
 
       <div style={{ display: "flex", minHeight: "calc(100vh - 72px)", maxWidth: 1800, margin: "0 auto", padding: "32px", gap: 32 }}>
         {/* Left Panel */}
-        <div style={{ flex: "1 1 78%", minWidth: 0 }}>
+        <div style={{ flex: "1 1 65%", minWidth: 0 }}>
           {!imgSrc && (
             <div
               onDrop={handleDrop}
@@ -275,7 +275,7 @@ export default function BentoCheckerPro() {
           {imgSrc && (
             <div style={{ textAlign: "center" }}>
               <div style={{ background: C.card, borderRadius: 20, padding: 12, boxShadow: "0 2px 10px rgba(0,0,0,0.05)" }}>
-                <div style={{ position: "relative", display: "inline-block", width: "60%" }}>
+                <div style={{ position: "relative", display: "inline-block", width: "100%" }}>
                   <img
                     src={imgSrc}
                     alt="bento"
@@ -355,7 +355,7 @@ export default function BentoCheckerPro() {
         </div>
 
         {/* Right Panel */}
-        <div style={{ flex: "1 1 22%", minWidth: 320 }}>
+        <div style={{ flex: "1 1 35%", minWidth: 400 }}>
           {!results && !viewHistory && !analyzing && (
             <div style={{ color: C.textSub, textAlign: "center", marginTop: 100, fontSize: 16 }}>
               画像をアップロードして<br />解析を開始してください
