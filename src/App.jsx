@@ -49,13 +49,21 @@ async function analyzeArea(b64, areaName, apiKey) {
 Your job: Estimate the percentage of EMPTY space where food SHOULD be placed but is NOT.
 
 RULES:
-- Count empty space = visible tray bottom, gaps between foods, areas with no food
-- Do NOT count the tray border/frame/edge as empty (only the food placement area inside)
-- Be strict: even a small gap on one side of the compartment counts
-- If food is pushed to one side leaving visible space on the other side, that IS empty space
-- A side gap of about 1/4 of the compartment width = approximately 20-25% empty
-- A side gap of about 1/5 of the compartment width = approximately 15-20% empty
-- NEVER underestimate: when in doubt, round UP
+1. DO NOT COUNT as empty:
+   - Gaps between paper/foil cups (おかずカップ) - cups always have gaps between them, this is normal
+   - The tray border/frame/outer edge
+   - Space inside cups that is filled with food
+
+2. DO COUNT as empty:
+   - Visible red/orange tray bottom in areas where food is placed directly (not in cups)
+   - Gaps beside directly-placed food items (like tamagoyaki, korokke placed directly on tray)
+   - Areas in the compartment with no food and no cup
+
+3. STRICTNESS:
+   - If a directly-placed food item has a visible gap beside it (e.g. tamagoyaki with space next to it), count that gap
+   - A gap of about 1/4 compartment width = ~20-25% empty
+   - A gap of about 1/5 compartment width = ~15-20% empty
+   - When in doubt, round UP
 
 Respond ONLY with valid JSON: {"pct": number, "reason": "string in Japanese"}`;
 
