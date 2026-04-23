@@ -46,25 +46,21 @@ async function analyzeArea(b64, areaName) {
   const isMain = areaName.includes("メイン") || areaName.includes("右上");
   const prompt = isMain ? `You are inspecting the MAIN section (右上メイン) of a bento tray.
 
-TASK: Estimate the percentage (0-100) of empty space in this section.
+TASK: Estimate the EXACT percentage (0-100) of empty/visible tray space.
 
-WHAT TO COUNT AS EMPTY:
-- Visible red/brown tray surface (no food, no cup on it)
-- Space around paper cups where you can see the tray
-- Gaps between food items where tray is visible
+CRITICAL: Your estimate should VARY based on what you actually see. Do not default to 15%.
 
-WHAT NOT TO COUNT:
-- Food items themselves
-- The tray frame/border
+Examples of different situations:
+- Completely packed, no visible tray at all → 0-3%
+- Very tight with tiny gaps → 5-8%
+- Small gap on one edge → 10-13%
+- Noticeable empty strip → 17-22%
+- Food pushed to one side, big empty area → 25-35%
+- Nearly half empty → 40-50%
 
-BE PRECISE:
-- Give an accurate estimate based on what you see
-- Different images should get different scores
-- If the section is completely full with food and cups touching edges: close to 0%
-- If significant tray surface is visible: higher percentage
-- Estimate the actual visible empty ratio
+Look carefully and give your BEST estimate based on the ACTUAL amount of red/brown tray visible.
 
-Return ONLY JSON: {"pct": number, "reason": "Japanese description of what empty space you see, including WHERE the gaps are"}`
+Return ONLY JSON: {"pct": <your_actual_estimate>, "reason": "日本語で具体的にどこが空いているか"}`
   : `You are inspecting "${areaName}" section of a bento tray (not main section).
 
 RULES:
@@ -84,6 +80,7 @@ Return ONLY JSON: {"pct": number, "reason": "Japanese text"}`;
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
       max_tokens: 300,
+      temperature: 1.0,
       messages: [{
         role: "user",
         content: [
