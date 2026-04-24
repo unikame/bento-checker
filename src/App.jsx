@@ -6,11 +6,94 @@ const AREAS = [
   { name: "右下（副菜B）", key: "sub2" },
 ];
 
-const CROP_DEFS = [
+// デフォルト座標（検出失敗時のフォールバック）
+const DEFAULT_CROP_DEFS = [
   [0.07, 0.38, 0.37, 0.87],  // 右上（メイン）: y1, y2, x1, x2
   [0.07, 0.38, 0.15, 0.37],  // 左上（副菜A）
   [0.50, 0.88, 0.66, 0.87],  // 右下（副菜B）
 ];
+
+// AIで容器と各区画の位置を検出
+async function detectRegions(file) {
+  const bitmap = await createImageBitmap(file);
+  const maxSize = 1000;
+  const scale = Math.min(1, maxSize / Math.max(bitmap.width, bitmap.height));
+  const canvas = new OffscreenCanvas(
+    Math.floor(bitmap.width * scale),
+    Math.floor(bitmap.height * scale)
+  );
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
+  const b64 = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1]);
+    reader.onerror = () => reject(new Error("FileReader error"));
+    reader.readAsDataURL(blob);
+  });
+
+  const prompt = `この弁当画像から、赤い弁当容器の3つの区画の位置を検出してください。
+
+通常の弁当容器は4区画あり、以下の3つを特定します:
+1. 右上（メイン）: 上段右側の大きな区画（メイン料理用）
+2. 左上（副菜A）: 上段左側の小さな区画
+3. 右下（副菜B）: 下段右側の小さな区画
+
+それぞれの区画の座標を、画像全体に対する比率（0.0〜1.0）で返してください。
+- x1, y1: 区画の左上の座標（x1=左端からの比率、y1=上端からの比率）
+- x2, y2: 区画の右下の座標
+
+JSONで返してください（数値以外のテキストは不要）:
+{
+  "main": {"x1": 0.37, "y1": 0.07, "x2": 0.87, "y2": 0.38},
+  "sub1": {"x1": 0.15, "y1": 0.07, "x2": 0.37, "y2": 0.38},
+  "sub2": {"x1": 0.66, "y1": 0.50, "x2": 0.87, "y2": 0.88}
+}`;
+
+  try {
+    const res = await fetch("/api/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 500,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
+            { type: "text", text: prompt },
+          ],
+        }],
+      }),
+    });
+
+    if (!res.ok) return DEFAULT_CROP_DEFS;
+
+    const data = await res.json();
+    const text = data.content?.[0]?.text || "{}";
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return DEFAULT_CROP_DEFS;
+
+    const regions = JSON.parse(match[0]);
+    const valid = (r) => r && typeof r.x1 === "number" && typeof r.y1 === "number"
+      && typeof r.x2 === "number" && typeof r.y2 === "number"
+      && r.x1 >= 0 && r.x2 <= 1 && r.y1 >= 0 && r.y2 <= 1
+      && r.x1 < r.x2 && r.y1 < r.y2;
+
+    if (!valid(regions.main) || !valid(regions.sub1) || !valid(regions.sub2)) {
+      return DEFAULT_CROP_DEFS;
+    }
+
+    return [
+      [regions.main.y1, regions.main.y2, regions.main.x1, regions.main.x2],
+      [regions.sub1.y1, regions.sub1.y2, regions.sub1.x1, regions.sub1.x2],
+      [regions.sub2.y1, regions.sub2.y2, regions.sub2.x1, regions.sub2.x2],
+    ];
+  } catch {
+    return DEFAULT_CROP_DEFS;
+  }
+}
 
 async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
   const bitmap = await createImageBitmap(file);
@@ -233,6 +316,7 @@ export default function BentoCheckerPro() {
   const [error, setError] = useState(null);
   const [history, setHistory] = useState([]);
   const [viewHistory, setViewHistory] = useState(false);
+  const [cropDefs, setCropDefs] = useState(DEFAULT_CROP_DEFS);
   const fileRef = useRef(null);
 
   const handleFile = useCallback((file) => {
@@ -257,16 +341,21 @@ export default function BentoCheckerPro() {
     setProgress(0);
 
     try {
+      // STEP 0: 容器の位置を自動検出
+      setProgressLabel("容器の位置を検出中...");
+      const cropDefs = await detectRegions(imgFile);
+      setCropDefs(cropDefs);
+
       const areaResults = [];
       for (let i = 0; i < AREAS.length; i++) {
         setProgressLabel(`${AREAS[i].name} を解析中...`);
-        setProgress(Math.round((i / AREAS.length) * 100));
+        setProgress(Math.round(((i + 1) / (AREAS.length + 1)) * 100));
 
-        const [y1r, y2r, x1r, x2r] = CROP_DEFS[i];
+        const [y1r, y2r, x1r, x2r] = cropDefs[i];
         const b64 = await cropFileToBase64(imgFile, x1r, y1r, x2r, y2r);
         const res = await analyzeArea(b64, AREAS[i].name);
         areaResults.push({ ...AREAS[i], pct: res.pct ?? 0, reason: res.reason ?? "" });
-        setProgress(Math.round(((i + 1) / AREAS.length) * 100));
+        setProgress(Math.round(((i + 2) / (AREAS.length + 1)) * 100));
       }
 
       const avg = areaResults.reduce((s, r) => s + r.pct, 0) / areaResults.length;
@@ -300,6 +389,7 @@ export default function BentoCheckerPro() {
     setImgFile(null);
     setResults(null);
     setError(null);
+    setCropDefs(DEFAULT_CROP_DEFS);
   };
 
   useEffect(() => {
@@ -368,7 +458,7 @@ export default function BentoCheckerPro() {
                     style={{ width: "100%", borderRadius: 12, display: "block" }}
                   />
                   {/* 3つのエリア枠オーバーレイ */}
-                  {CROP_DEFS.map((def, i) => {
+                  {cropDefs.map((def, i) => {
                     const [y1r, y2r, x1r, x2r] = def;
                     const colors = ["#ff3b30", "#0071e3", "#34c759"];
                     const labels = ["右上（メイン）", "左上（副菜A）", "右下（副菜B）"];
