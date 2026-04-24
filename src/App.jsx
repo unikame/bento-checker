@@ -36,6 +36,28 @@ function waitForOpenCV() {
   });
 }
 
+// 保存された座標をlocalStorageから読み込み
+function loadSavedCropDefs() {
+  try {
+    const saved = localStorage.getItem("savedCropDefs");
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length === 3) {
+        return parsed;
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function saveCropDefs(cropDefs) {
+  try {
+    // 配列のコピー（プロパティを除外）
+    const cleaned = cropDefs.map(d => [...d]);
+    localStorage.setItem("savedCropDefs", JSON.stringify(cleaned));
+  } catch {}
+}
+
 // OpenCVが検出した容器外枠を一時保存（デバッグ用）
 let lastContainerBox = null;
 
@@ -617,9 +639,12 @@ export default function BentoCheckerPro() {
   const [error, setError] = useState(null);
   const [history, setHistory] = useState([]);
   const [viewHistory, setViewHistory] = useState(false);
-  const [cropDefs, setCropDefs] = useState(DEFAULT_CROP_DEFS);
+  const [cropDefs, setCropDefs] = useState(() => loadSavedCropDefs() || DEFAULT_CROP_DEFS);
   const [containerBox, setContainerBox] = useState(null);
   const [debugMode, setDebugMode] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [dragState, setDragState] = useState(null);
+  const imageContainerRef = useRef(null);
   const fileRef = useRef(null);
 
   const handleFile = useCallback((file) => {
@@ -644,9 +669,17 @@ export default function BentoCheckerPro() {
     setProgress(0);
 
     try {
-      // STEP 0: 容器の位置を自動検出
-      setProgressLabel("容器の位置を自動検出中（OpenCV）...");
-      const cropDefs = await detectRegions(imgFile);
+      // STEP 0: 容器の位置を検出
+      // 保存された座標があれば使用、なければOpenCVで自動検出
+      const savedDefs = loadSavedCropDefs();
+      let cropDefs;
+      if (savedDefs) {
+        setProgressLabel("保存された座標を使用中...");
+        cropDefs = savedDefs;
+      } else {
+        setProgressLabel("容器の位置を自動検出中（OpenCV）...");
+        cropDefs = await detectRegions(imgFile);
+      }
       setCropDefs(cropDefs);
       setContainerBox(lastContainerBox);
 
@@ -702,6 +735,68 @@ export default function BentoCheckerPro() {
     setImgFile(null);
     setResults(null);
     setError(null);
+    setCropDefs(loadSavedCropDefs() || DEFAULT_CROP_DEFS);
+  };
+
+  // ドラッグ開始
+  const handleDragStart = (e, boxIndex, handle) => {
+    if (!editMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = imageContainerRef.current.getBoundingClientRect();
+    setDragState({ boxIndex, handle, rect });
+  };
+
+  // ドラッグ中
+  useEffect(() => {
+    if (!dragState) return;
+    const handleMove = (e) => {
+      const { boxIndex, handle, rect } = dragState;
+      const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+
+      setCropDefs((prev) => {
+        const newDefs = prev.map(d => [...d]);
+        const [y1, y2, x1, x2] = newDefs[boxIndex];
+
+        if (handle === "move") {
+          // 中央ドラッグで移動
+          const cx = (x1 + x2) / 2;
+          const cy = (y1 + y2) / 2;
+          const dx = x - cx;
+          const dy = y - cy;
+          newDefs[boxIndex] = [
+            Math.max(0, y1 + dy),
+            Math.min(1, y2 + dy),
+            Math.max(0, x1 + dx),
+            Math.min(1, x2 + dx),
+          ];
+        } else {
+          // 角ドラッグでリサイズ
+          if (handle.includes("n")) newDefs[boxIndex][0] = Math.min(y, y2 - 0.05);
+          if (handle.includes("s")) newDefs[boxIndex][1] = Math.max(y, y1 + 0.05);
+          if (handle.includes("w")) newDefs[boxIndex][2] = Math.min(x, x2 - 0.05);
+          if (handle.includes("e")) newDefs[boxIndex][3] = Math.max(x, x1 + 0.05);
+        }
+        return newDefs;
+      });
+    };
+    const handleUp = () => setDragState(null);
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMove);
+      window.removeEventListener("mouseup", handleUp);
+    };
+  }, [dragState]);
+
+  const saveAndExitEdit = () => {
+    saveCropDefs(cropDefs);
+    setEditMode(false);
+  };
+
+  const resetSavedCoords = () => {
+    localStorage.removeItem("savedCropDefs");
     setCropDefs(DEFAULT_CROP_DEFS);
   };
 
@@ -737,6 +832,30 @@ export default function BentoCheckerPro() {
           </div>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
+          {imgSrc && !editMode && (
+            <button
+              onClick={() => setEditMode(true)}
+              style={{ background: "#0071e3", border: "none", color: "white", borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 500 }}
+            >
+              ✏️ 枠を調整
+            </button>
+          )}
+          {editMode && (
+            <>
+              <button
+                onClick={saveAndExitEdit}
+                style={{ background: "#34c759", border: "none", color: "white", borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 600 }}
+              >
+                ✓ 保存して終了
+              </button>
+              <button
+                onClick={resetSavedCoords}
+                style={{ background: "transparent", border: `1px solid ${C.border}`, color: C.textSub, borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14 }}
+              >
+                リセット
+              </button>
+            </>
+          )}
           <button
             onClick={() => setDebugMode(!debugMode)}
             style={{ background: debugMode ? "#f5a623" : "transparent", border: `1px solid ${debugMode ? "#f5a623" : C.border}`, color: debugMode ? "white" : C.text, borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 500 }}
@@ -772,7 +891,7 @@ export default function BentoCheckerPro() {
           {imgSrc && (
             <div style={{ textAlign: "center" }}>
               <div style={{ background: C.card, borderRadius: 20, padding: 12, boxShadow: "0 2px 10px rgba(0,0,0,0.05)" }}>
-                <div style={{ position: "relative", display: "inline-block", width: "85%" }}>
+                <div ref={imageContainerRef} style={{ position: "relative", display: "inline-block", width: "85%" }}>
                   <img
                     src={imgSrc}
                     alt="bento"
@@ -816,9 +935,11 @@ export default function BentoCheckerPro() {
                     const emptyBoxes = area?.empty_boxes || [];
                     const areaW = x2r - x1r;
                     const areaH = y2r - y1r;
+                    const handleSize = 14;
                     return (
                       <div
                         key={i}
+                        onMouseDown={editMode ? (e) => handleDragStart(e, i, "move") : undefined}
                         style={{
                           position: "absolute",
                           left: `${x1r * 100}%`,
@@ -828,11 +949,13 @@ export default function BentoCheckerPro() {
                           border: `3px solid ${colors[i]}`,
                           borderRadius: 8,
                           boxSizing: "border-box",
-                          pointerEvents: "none",
+                          pointerEvents: editMode ? "auto" : "none",
+                          cursor: editMode ? "move" : "default",
+                          background: editMode ? `${colors[i]}15` : "transparent",
                         }}
                       >
-                        {/* 空きスペースのハイライト（半透明の黄色） */}
-                        {emptyBoxes.map((box, j) => (
+                        {/* 空きスペースのハイライト（編集モード中は非表示） */}
+                        {!editMode && emptyBoxes.map((box, j) => (
                           <div
                             key={j}
                             style={{
@@ -859,9 +982,34 @@ export default function BentoCheckerPro() {
                           padding: "2px 8px",
                           borderRadius: 4,
                           whiteSpace: "nowrap",
+                          pointerEvents: "none",
                         }}>
-                          {labels[i]}{pct !== undefined ? ` ${pct}%` : ""}
+                          {labels[i]}{!editMode && pct !== undefined ? ` ${pct}%` : ""}
                         </div>
+                        {/* 編集モード時のドラッグハンドル（4角） */}
+                        {editMode && ["nw", "ne", "sw", "se"].map((pos) => {
+                          const styles = {
+                            position: "absolute",
+                            width: handleSize,
+                            height: handleSize,
+                            background: colors[i],
+                            border: "2px solid white",
+                            borderRadius: "50%",
+                            cursor: `${pos}-resize`,
+                            boxShadow: "0 1px 3px rgba(0,0,0,0.3)",
+                          };
+                          if (pos.includes("n")) styles.top = -handleSize / 2;
+                          if (pos.includes("s")) styles.bottom = -handleSize / 2;
+                          if (pos.includes("w")) styles.left = -handleSize / 2;
+                          if (pos.includes("e")) styles.right = -handleSize / 2;
+                          return (
+                            <div
+                              key={pos}
+                              onMouseDown={(e) => handleDragStart(e, i, pos)}
+                              style={styles}
+                            />
+                          );
+                        })}
                       </div>
                     );
                   })}
