@@ -115,32 +115,147 @@ async function detectRegions(file) {
 
     console.log("[OpenCV] Container detected:", containerRect, "area:", maxArea);
 
+    // === 仕切り線検出 ===
+    // 容器内の暗い線（黒い溝）を検出
+    const gray = new cv.Mat();
+    cv.cvtColor(src, gray, cv.COLOR_RGB2GRAY);
+
+    // 容器内の領域を切り出し
+    const roi = gray.roi(containerRect);
+
+    // 閾値処理で暗い部分（黒い仕切り線）を抽出
+    const darkMask = new cv.Mat();
+    cv.threshold(roi, darkMask, 60, 255, cv.THRESH_BINARY_INV);
+
+    // 水平線検出用のカーネル（横長）
+    const horKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(40, 1));
+    const horLines = new cv.Mat();
+    cv.morphologyEx(darkMask, horLines, cv.MORPH_OPEN, horKernel);
+
+    // 垂直線検出用のカーネル（縦長）
+    const verKernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(1, 40));
+    const verLines = new cv.Mat();
+    cv.morphologyEx(darkMask, verLines, cv.MORPH_OPEN, verKernel);
+
+    // 各行・列のピクセル数を集計
+    const rows = horLines.rows;
+    const cols = horLines.cols;
+
+    // 水平線の行を探す（ピクセルが集中している行）
+    const rowSums = [];
+    for (let y = 0; y < rows; y++) {
+      let sum = 0;
+      for (let x = 0; x < cols; x++) {
+        if (horLines.ucharPtr(y, x)[0] > 0) sum++;
+      }
+      rowSums.push({ y, sum });
+    }
+
+    // 容器の中央付近（40-60%）で最もピクセル数が多い行を水平仕切りとする
+    let horSepY = Math.floor(rows * 0.5);
+    let maxRowSum = 0;
+    for (let y = Math.floor(rows * 0.4); y < Math.floor(rows * 0.6); y++) {
+      if (rowSums[y].sum > maxRowSum) {
+        maxRowSum = rowSums[y].sum;
+        horSepY = y;
+      }
+    }
+
+    // 垂直線の列を探す
+    const colSums = [];
+    for (let x = 0; x < cols; x++) {
+      let sum = 0;
+      for (let y = 0; y < rows; y++) {
+        if (verLines.ucharPtr(y, x)[0] > 0) sum++;
+      }
+      colSums.push({ x, sum });
+    }
+
+    // 上段の垂直仕切り（x: 20%-45%の範囲で最大）
+    let upperVerX = Math.floor(cols * 0.33);
+    let maxUpperSum = 0;
+    for (let x = Math.floor(cols * 0.2); x < Math.floor(cols * 0.45); x++) {
+      // 上段のみで集計
+      let sum = 0;
+      for (let y = 0; y < horSepY; y++) {
+        if (verLines.ucharPtr(y, x)[0] > 0) sum++;
+      }
+      if (sum > maxUpperSum) {
+        maxUpperSum = sum;
+        upperVerX = x;
+      }
+    }
+
+    // 下段の垂直仕切り（x: 55%-75%の範囲で最大）
+    let lowerVerX = Math.floor(cols * 0.65);
+    let maxLowerSum = 0;
+    for (let x = Math.floor(cols * 0.55); x < Math.floor(cols * 0.75); x++) {
+      let sum = 0;
+      for (let y = horSepY; y < rows; y++) {
+        if (verLines.ucharPtr(y, x)[0] > 0) sum++;
+      }
+      if (sum > maxLowerSum) {
+        maxLowerSum = sum;
+        lowerVerX = x;
+      }
+    }
+
+    console.log("[OpenCV] Dividers - horSepY:", horSepY, "/", rows, "upperVerX:", upperVerX, "lowerVerX:", lowerVerX);
+
+    // 仕切り位置を容器内相対座標に変換
+    const horSepRel = horSepY / rows;
+    const upperVerRel = upperVerX / cols;
+    const lowerVerRel = lowerVerX / cols;
+
+    // パディング（仕切り線の内側に少し余白を入れる）
+    const padY = 0.02;
+    const padX = 0.02;
+
+    // 検出した仕切り位置に基づく区画定義
+    const detectedRegions = {
+      main:  {
+        x1: upperVerRel + padX,
+        y1: 0.04,
+        x2: 0.97,
+        y2: horSepRel - padY,
+      },
+      sub1:  {
+        x1: 0.03,
+        y1: 0.04,
+        x2: upperVerRel - padX,
+        y2: horSepRel - padY,
+      },
+      sub2:  {
+        x1: lowerVerRel + padX,
+        y1: horSepRel + padY,
+        x2: 0.97,
+        y2: 0.96,
+      },
+    };
+
+    // クリーンアップ
+    gray.delete();
+    roi.delete();
+    darkMask.delete();
+    horKernel.delete();
+    horLines.delete();
+    verKernel.delete();
+    verLines.delete();
+
     // 容器の位置（画像全体に対する比率）
     const cx1 = containerRect.x / w;
     const cy1 = containerRect.y / h;
     const cx2 = (containerRect.x + containerRect.width) / w;
     const cy2 = (containerRect.y + containerRect.height) / h;
+    const cw_rel = cx2 - cx1;
+    const ch_rel = cy2 - cy1;
 
-    // 容器内の区画比率（サンプル画像から計算した相対位置）
-    // 容器内座標 → 画像全体座標に変換
-    const cw = cx2 - cx1;
-    const ch = cy2 - cy1;
-
-    // サンプル画像での容器内相対位置
-    // 右上メイン: 左端から37.6%〜92.6%, 上端から8.5%〜43.3% が画像全体基準
-    // 容器が画像全体の(cx1, cy1)-(cx2, cy2)にあるとして、
-    // 容器内での相対位置に変換
-    const containerRelative = {
-      main:  { x1: 0.34, y1: 0.05, x2: 0.97, y2: 0.48 },
-      sub1:  { x1: 0.04, y1: 0.05, x2: 0.33, y2: 0.48 },
-      sub2:  { x1: 0.66, y1: 0.52, x2: 0.97, y2: 0.95 },
-    };
-
+    // 検出した仕切り位置を使う（容器内相対 → 画像全体座標に変換）
     const toImageCoord = (r) => [
-      cy1 + r.y1 * ch,
-      cy1 + r.y2 * ch,
-      cx1 + r.x1 * cw,
-      cx1 + r.x2 * cw,
+      cy1 + r.y1 * ch_rel,
+      cy1 + r.y2 * ch_rel,
+      cx1 + r.x1 * cw_rel,
+      cx1 + r.x2 * cw_rel,
     ];
 
     cleanup();
@@ -149,9 +264,9 @@ async function detectRegions(file) {
     lastContainerBox = { x1: cx1, y1: cy1, x2: cx2, y2: cy2 };
 
     return [
-      toImageCoord(containerRelative.main),
-      toImageCoord(containerRelative.sub1),
-      toImageCoord(containerRelative.sub2),
+      toImageCoord(detectedRegions.main),
+      toImageCoord(detectedRegions.sub1),
+      toImageCoord(detectedRegions.sub2),
     ];
   } catch (e) {
     console.error("OpenCV detection failed:", e);
