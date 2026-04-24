@@ -17,105 +17,133 @@ const DEFAULT_CROP_DEFS = [
   [0.479, 0.894, 0.661, 0.923],  // 右下（副菜B）
 ];
 
-// AIで容器と各区画の位置を検出
-async function detectRegions(file) {
-  const bitmap = await createImageBitmap(file);
-  const maxSize = 1500;
-  const scale = Math.min(1, maxSize / Math.max(bitmap.width, bitmap.height));
-  const canvas = new OffscreenCanvas(
-    Math.floor(bitmap.width * scale),
-    Math.floor(bitmap.height * scale)
-  );
-  const ctx = canvas.getContext("2d");
-  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
-  const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
-  const b64 = await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(",")[1]);
-    reader.onerror = () => reject(new Error("FileReader error"));
-    reader.readAsDataURL(blob);
+// OpenCV.jsの準備を待つ
+function waitForOpenCV() {
+  return new Promise((resolve) => {
+    if (window.cv && window.cv.Mat) {
+      resolve();
+      return;
+    }
+    const check = setInterval(() => {
+      if (window.cv && window.cv.Mat) {
+        clearInterval(check);
+        resolve();
+      }
+    }, 100);
+    setTimeout(() => { clearInterval(check); resolve(); }, 15000);
   });
+}
 
-  const prompt = `この弁当容器の4区画を正確に特定してください。
-
-【容器の構造】
-赤い4区画の弁当容器で、黒い仕切り線で分けられています:
-- 上段左: 小さい正方形の区画（副菜A）
-- 上段右: 大きい横長の区画（メイン）← 上段で一番大きい
-- 下段左: 大きい横長の区画（ご飯）← 下段で一番大きい
-- 下段右: 小さい縦長の区画（副菜B）
-
-【重要な手順】
-1. 画像全体を見て、赤い容器の外枠を特定
-2. 容器を上段と下段に分ける水平の仕切り線を見つける
-3. 上段を左右に分ける垂直の仕切り線を見つける
-4. 下段を左右に分ける垂直の仕切り線を見つける
-
-【各区画の座標ルール】
-座標は画像全体（容器の外の背景も含む）に対する比率（0.0〜1.0）で指定。
-- x=0.0: 画像の左端
-- x=1.0: 画像の右端
-- y=0.0: 画像の上端
-- y=1.0: 画像の下端
-
-【精度の注意】
-- 各区画の内側の縁（食材が置かれる範囲）に合わせる
-- 区画の外枠（赤い縁の外側）ではなく、食材が置かれる底面の範囲
-- 隣の区画に食み出さない
-- 容器の外の背景は含めない
-
-【典型的な値の範囲】
-通常の撮影では以下の範囲に収まります:
-- メイン: x1=0.30〜0.45, y1=0.05〜0.15, x2=0.88〜0.97, y2=0.40〜0.50
-- 副菜A: x1=0.05〜0.20, y1=0.05〜0.15, x2=0.30〜0.42, y2=0.40〜0.50
-- 副菜B: x1=0.60〜0.72, y1=0.48〜0.58, x2=0.88〜0.97, y2=0.85〜0.95
-
-この範囲を参考に、実際の画像の容器の位置に合わせて正確な座標を返してください。
-
-JSONのみで返してください（他の文章は不要）:
-{"main":{"x1":num,"y1":num,"x2":num,"y2":num},"sub1":{"x1":num,"y1":num,"x2":num,"y2":num},"sub2":{"x1":num,"y1":num,"x2":num,"y2":num}}`;
-
+// OpenCVで弁当容器の4区画を自動検出
+async function detectRegions(file) {
   try {
-    const res = await fetch("/api/analyze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 500,
-        messages: [{
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
-            { type: "text", text: prompt },
-          ],
-        }],
-      }),
-    });
-
-    if (!res.ok) return DEFAULT_CROP_DEFS;
-
-    const data = await res.json();
-    const text = data.content?.[0]?.text || "{}";
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) return DEFAULT_CROP_DEFS;
-
-    const regions = JSON.parse(match[0]);
-    const valid = (r) => r && typeof r.x1 === "number" && typeof r.y1 === "number"
-      && typeof r.x2 === "number" && typeof r.y2 === "number"
-      && r.x1 >= 0 && r.x2 <= 1 && r.y1 >= 0 && r.y2 <= 1
-      && r.x1 < r.x2 && r.y1 < r.y2;
-
-    if (!valid(regions.main) || !valid(regions.sub1) || !valid(regions.sub2)) {
+    await waitForOpenCV();
+    if (!window.cv || !window.cv.Mat) {
+      console.warn("OpenCV not loaded, using default");
       return DEFAULT_CROP_DEFS;
     }
 
-    return [
-      [regions.main.y1, regions.main.y2, regions.main.x1, regions.main.x2],
-      [regions.sub1.y1, regions.sub1.y2, regions.sub1.x1, regions.sub1.x2],
-      [regions.sub2.y1, regions.sub2.y2, regions.sub2.x1, regions.sub2.x2],
+    // 画像をCanvasに読み込む
+    const bitmap = await createImageBitmap(file);
+    const maxSize = 1200;
+    const scale = Math.min(1, maxSize / Math.max(bitmap.width, bitmap.height));
+    const w = Math.floor(bitmap.width * scale);
+    const h = Math.floor(bitmap.height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    bitmap.close();
+
+    const cv = window.cv;
+    const src = cv.imread(canvas);
+    const hsv = new cv.Mat();
+    cv.cvtColor(src, hsv, cv.COLOR_RGB2HSV);
+
+    // 赤色マスク（HSVで2つの範囲 + OR）
+    const mask1 = new cv.Mat();
+    const mask2 = new cv.Mat();
+    const redMask = new cv.Mat();
+    const low1 = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 80, 50, 0]);
+    const high1 = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [15, 255, 200, 255]);
+    const low2 = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [160, 80, 50, 0]);
+    const high2 = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 200, 255]);
+    cv.inRange(hsv, low1, high1, mask1);
+    cv.inRange(hsv, low2, high2, mask2);
+    cv.bitwise_or(mask1, mask2, redMask);
+
+    // モルフォロジー処理でノイズ除去 & 穴埋め
+    const kernel = cv.Mat.ones(7, 7, cv.CV_8U);
+    cv.morphologyEx(redMask, redMask, cv.MORPH_CLOSE, kernel);
+    cv.morphologyEx(redMask, redMask, cv.MORPH_OPEN, kernel);
+
+    // 最大の赤い輪郭を容器とみなす
+    const contours = new cv.MatVector();
+    const hierarchy = new cv.Mat();
+    cv.findContours(redMask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    let maxArea = 0;
+    let containerRect = null;
+    for (let i = 0; i < contours.size(); i++) {
+      const area = cv.contourArea(contours.get(i));
+      if (area > maxArea) {
+        maxArea = area;
+        containerRect = cv.boundingRect(contours.get(i));
+      }
+    }
+
+    // クリーンアップ
+    const cleanup = () => {
+      src.delete(); hsv.delete();
+      mask1.delete(); mask2.delete(); redMask.delete();
+      low1.delete(); high1.delete(); low2.delete(); high2.delete();
+      kernel.delete();
+      contours.delete(); hierarchy.delete();
+    };
+
+    if (!containerRect || maxArea < (w * h) * 0.2) {
+      cleanup();
+      return DEFAULT_CROP_DEFS;
+    }
+
+    // 容器の位置（画像全体に対する比率）
+    const cx1 = containerRect.x / w;
+    const cy1 = containerRect.y / h;
+    const cx2 = (containerRect.x + containerRect.width) / w;
+    const cy2 = (containerRect.y + containerRect.height) / h;
+
+    // 容器内の区画比率（サンプル画像から計算した相対位置）
+    // 容器内座標 → 画像全体座標に変換
+    const cw = cx2 - cx1;
+    const ch = cy2 - cy1;
+
+    // サンプル画像での容器内相対位置
+    // 右上メイン: 左端から37.6%〜92.6%, 上端から8.5%〜43.3% が画像全体基準
+    // 容器が画像全体の(cx1, cy1)-(cx2, cy2)にあるとして、
+    // 容器内での相対位置に変換
+    const containerRelative = {
+      main:  { x1: 0.34, y1: 0.05, x2: 0.97, y2: 0.48 },
+      sub1:  { x1: 0.04, y1: 0.05, x2: 0.33, y2: 0.48 },
+      sub2:  { x1: 0.66, y1: 0.52, x2: 0.97, y2: 0.95 },
+    };
+
+    const toImageCoord = (r) => [
+      cy1 + r.y1 * ch,
+      cy1 + r.y2 * ch,
+      cx1 + r.x1 * cw,
+      cx1 + r.x2 * cw,
     ];
-  } catch {
+
+    cleanup();
+
+    return [
+      toImageCoord(containerRelative.main),
+      toImageCoord(containerRelative.sub1),
+      toImageCoord(containerRelative.sub2),
+    ];
+  } catch (e) {
+    console.error("OpenCV detection failed:", e);
     return DEFAULT_CROP_DEFS;
   }
 }
@@ -487,7 +515,7 @@ export default function BentoCheckerPro() {
 
     try {
       // STEP 0: 容器の位置を自動検出
-      setProgressLabel("容器の位置を検出中...");
+      setProgressLabel("容器の位置を自動検出中（OpenCV）...");
       const cropDefs = await detectRegions(imgFile);
       setCropDefs(cropDefs);
 
