@@ -143,6 +143,76 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
   });
 }
 
+// 画像内の赤茶色トレー部分をピクセル検出して、空きエリアのマスクを返す
+async function detectTrayEmptyAreas(file, x1r, y1r, x2r, y2r) {
+  const bitmap = await createImageBitmap(file);
+  const sw = bitmap.width;
+  const sh = bitmap.height;
+  const x1 = Math.floor(sw * x1r);
+  const y1 = Math.floor(sh * y1r);
+  const cw = Math.max(1, Math.floor(sw * (x2r - x1r)));
+  const ch = Math.max(1, Math.floor(sh * (y2r - y1r)));
+  // 解析用に縮小
+  const targetSize = 60;
+  const scale = targetSize / Math.max(cw, ch);
+  const ow = Math.max(10, Math.floor(cw * scale));
+  const oh = Math.max(10, Math.floor(ch * scale));
+  const canvas = new OffscreenCanvas(ow, oh);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, x1, y1, cw, ch, 0, 0, ow, oh);
+  bitmap.close();
+
+  const imgData = ctx.getImageData(0, 0, ow, oh);
+  const data = imgData.data;
+
+  // トレー色判定: 赤茶色（R: 100-200, G: 30-90, B: 30-80）＆ R > G, R > B
+  const mask = new Uint8Array(ow * oh);
+  let emptyCount = 0;
+  for (let i = 0; i < ow * oh; i++) {
+    const r = data[i * 4];
+    const g = data[i * 4 + 1];
+    const b = data[i * 4 + 2];
+    const isTrayColor =
+      r >= 90 && r <= 210 &&
+      g >= 20 && g <= 95 &&
+      b >= 20 && b <= 85 &&
+      r > g + 30 && r > b + 30;
+    if (isTrayColor) {
+      mask[i] = 1;
+      emptyCount++;
+    }
+  }
+
+  // グリッドで分割してトレー色が集中しているブロックを検出
+  const gridSize = 8; // 8x8のグリッド
+  const cellW = Math.floor(ow / gridSize);
+  const cellH = Math.floor(oh / gridSize);
+  const boxes = [];
+  for (let gy = 0; gy < gridSize; gy++) {
+    for (let gx = 0; gx < gridSize; gx++) {
+      let count = 0;
+      let total = 0;
+      for (let py = gy * cellH; py < (gy + 1) * cellH && py < oh; py++) {
+        for (let px = gx * cellW; px < (gx + 1) * cellW && px < ow; px++) {
+          if (mask[py * ow + px]) count++;
+          total++;
+        }
+      }
+      if (total > 0 && count / total > 0.4) {
+        boxes.push({
+          x1: (gx * cellW) / ow,
+          y1: (gy * cellH) / oh,
+          x2: Math.min(((gx + 1) * cellW) / ow, 1),
+          y2: Math.min(((gy + 1) * cellH) / oh, 1),
+        });
+      }
+    }
+  }
+
+  const emptyRatio = emptyCount / (ow * oh);
+  return { boxes, emptyRatio };
+}
+
 async function analyzeArea(b64, areaName) {
   const isMain = areaName.includes("メイン") || areaName.includes("右上");
 
@@ -398,11 +468,15 @@ export default function BentoCheckerPro() {
         const [y1r, y2r, x1r, x2r] = cropDefs[i];
         const b64 = await cropFileToBase64(imgFile, x1r, y1r, x2r, y2r);
         const res = await analyzeArea(b64, AREAS[i].name);
+
+        // ピクセル検出で実際のトレー露出ボックスを取得
+        const { boxes: detectedBoxes } = await detectTrayEmptyAreas(imgFile, x1r, y1r, x2r, y2r);
+
         areaResults.push({
           ...AREAS[i],
           pct: res.pct ?? 0,
           reason: res.reason ?? "",
-          empty_boxes: res.empty_boxes ?? []
+          empty_boxes: detectedBoxes
         });
         setProgress(Math.round(((i + 2) / (AREAS.length + 1)) * 100));
       }
