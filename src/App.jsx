@@ -137,11 +137,14 @@ async function detectRegions(file) {
 
     cleanup();
 
-    return [
+    // 容器の矩形情報も返す（デバッグ用）
+    const result = [
       toImageCoord(containerRelative.main),
       toImageCoord(containerRelative.sub1),
       toImageCoord(containerRelative.sub2),
     ];
+    result.containerBox = { x1: cx1, y1: cy1, x2: cx2, y2: cy2 };
+    return result;
   } catch (e) {
     console.error("OpenCV detection failed:", e);
     return DEFAULT_CROP_DEFS;
@@ -491,6 +494,8 @@ export default function BentoCheckerPro() {
   const [history, setHistory] = useState([]);
   const [viewHistory, setViewHistory] = useState(false);
   const [cropDefs, setCropDefs] = useState(DEFAULT_CROP_DEFS);
+  const [containerBox, setContainerBox] = useState(null);
+  const [debugMode, setDebugMode] = useState(false);
   const fileRef = useRef(null);
 
   const handleFile = useCallback((file) => {
@@ -519,6 +524,7 @@ export default function BentoCheckerPro() {
       setProgressLabel("容器の位置を自動検出中（OpenCV）...");
       const cropDefs = await detectRegions(imgFile);
       setCropDefs(cropDefs);
+      if (cropDefs.containerBox) setContainerBox(cropDefs.containerBox);
 
       const areaResults = [];
       for (let i = 0; i < AREAS.length; i++) {
@@ -606,12 +612,20 @@ export default function BentoCheckerPro() {
             <div style={{ fontSize: 12, color: C.textSub, marginTop: 2 }}>AI-Powered Quality Inspection</div>
           </div>
         </div>
-        <button
-          onClick={() => setViewHistory(!viewHistory)}
-          style={{ background: "transparent", border: `1px solid ${C.border}`, color: C.text, borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 500 }}
-        >
-          📋 履歴 ({history.length})
-        </button>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            onClick={() => setDebugMode(!debugMode)}
+            style={{ background: debugMode ? "#f5a623" : "transparent", border: `1px solid ${debugMode ? "#f5a623" : C.border}`, color: debugMode ? "white" : C.text, borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 500 }}
+          >
+            🔍 デバッグ {debugMode ? "ON" : "OFF"}
+          </button>
+          <button
+            onClick={() => setViewHistory(!viewHistory)}
+            style={{ background: "transparent", border: `1px solid ${C.border}`, color: C.text, borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 500 }}
+          >
+            📋 履歴 ({history.length})
+          </button>
+        </div>
       </div>
 
       <div style={{ display: "flex", minHeight: "calc(100vh - 72px)", maxWidth: 1800, margin: "0 auto", padding: "32px", gap: 32 }}>
@@ -640,6 +654,34 @@ export default function BentoCheckerPro() {
                     alt="bento"
                     style={{ width: "100%", borderRadius: 12, display: "block" }}
                   />
+                  {/* デバッグ: OpenCVが検出した容器の外枠 */}
+                  {debugMode && containerBox && (
+                    <div style={{
+                      position: "absolute",
+                      left: `${containerBox.x1 * 100}%`,
+                      top: `${containerBox.y1 * 100}%`,
+                      width: `${(containerBox.x2 - containerBox.x1) * 100}%`,
+                      height: `${(containerBox.y2 - containerBox.y1) * 100}%`,
+                      border: "4px dashed #f5a623",
+                      boxSizing: "border-box",
+                      pointerEvents: "none",
+                    }}>
+                      <div style={{
+                        position: "absolute",
+                        top: -30,
+                        left: 0,
+                        background: "#f5a623",
+                        color: "white",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        padding: "3px 10px",
+                        borderRadius: 4,
+                      }}>
+                        🔍 OpenCV検出: 容器の外枠
+                      </div>
+                    </div>
+                  )}
+
                   {/* 3つのエリア枠オーバーレイ */}
                   {cropDefs.map((def, i) => {
                     const [y1r, y2r, x1r, x2r] = def;
