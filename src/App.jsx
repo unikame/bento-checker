@@ -200,10 +200,9 @@ async function detectTrayEmptyAreas(file, x1r, y1r, x2r, y2r) {
   const imgData = ctx.getImageData(0, 0, ow, oh);
   const data = imgData.data;
 
-  // トレー色判定を厳密化:
-  // - 赤みが強く、緑青が暗い
-  // - 暗すぎず明るすぎない（プラスチックの光沢を考慮）
-  // - 食材の茶色（ハンバーグ、唐揚げなど）を除外するため、R/G比とR/B比を厳しく
+  // トレー底面色判定:
+  // - 側面の明るい赤は除外、暗い赤茶色の底面のみを検出
+  // - 食材の茶色も除外
   const mask = new Uint8Array(ow * oh);
   let emptyCount = 0;
   for (let i = 0; i < ow * oh; i++) {
@@ -211,19 +210,19 @@ async function detectTrayEmptyAreas(file, x1r, y1r, x2r, y2r) {
     const g = data[i * 4 + 1];
     const b = data[i * 4 + 2];
 
-    // HSVに近い判定
     const max = Math.max(r, g, b);
     const min = Math.min(r, g, b);
     const saturation = max === 0 ? 0 : (max - min) / max;
 
     const isTrayColor =
-      r >= 110 && r <= 180 &&       // トレーの赤は中程度の明るさ
-      g >= 30 && g <= 75 &&          // 緑成分は低い
-      b >= 30 && b <= 75 &&          // 青成分も低い
-      r > g * 1.8 &&                 // 赤が緑より大幅に強い（食材の茶色を除外）
-      r > b * 1.8 &&                 // 赤が青より大幅に強い
-      Math.abs(g - b) < 25 &&        // 緑と青が近い値（純粋な赤茶色）
-      saturation > 0.45;             // 彩度が十分（くすんだ肉の色を除外）
+      r >= 100 && r <= 160 &&        // 底面の赤は中程度の明るさ（明るい側面を除外）
+      g >= 25 && g <= 60 &&          // 緑成分は低い
+      b >= 25 && b <= 60 &&          // 青成分も低い
+      r > g * 2.0 &&                 // 赤が緑より圧倒的に強い
+      r > b * 2.0 &&                 // 赤が青より圧倒的に強い
+      Math.abs(g - b) < 20 &&        // 緑と青が近い値
+      saturation > 0.55 &&           // 彩度が十分
+      max < 170;                     // 明るすぎない（側面のハイライトを除外）
 
     if (isTrayColor) {
       mask[i] = 1;
@@ -313,9 +312,11 @@ Return ONLY JSON: {"pct": number, "reason": "Japanese text"}`;
   const observePrompt = `右上メイン区画の画像を観察してください。
 
 【空きスペースの定義（重要）】
-空きスペース = 食材もカップも置かれておらず、赤茶色のトレー底面がむき出しに見えている部分のみ
+空きスペース = 食材もカップも置かれておらず、赤茶色のトレー「底面」がむき出しに見えている部分のみ
 
-【カウントしないもの】
+【絶対にカウントしないもの】
+- 容器の側面（区画の壁・斜面）※底面ではない部分
+- 区画の縁（食材が置けない立ち上がった部分）
 - 食材の表面や食材同士の凹凸（これは空きではない）
 - カップの中の見える隙間（カップ内は食材の範囲）
 - 仕切り板の溝や枠
