@@ -13,7 +13,7 @@ const AREAS = [
 
 const DEFAULT_CROP_DEFS = [
   [0.085, 0.433, 0.376, 0.926],  // 右上（メイン）: y1, y2, x1, x2
-  [0.085, 0.434, 0.079, 0.338],  // 左上（副菜A）
+  [0.085, 0.434, 0.140, 0.360],  // 左上（副菜A）
   [0.479, 0.894, 0.661, 0.923],  // 右下（副菜B）
 ];
 
@@ -257,7 +257,15 @@ JSONで返してください: {"observation": "詳細な観察結果", "overall"
 "${observation.overall}"なら${range[0]}〜${range[1]}%が妥当です。
 観察内容の具体性に応じて、この範囲内で適切な値を選んでください。
 
-JSONで返してください: {"pct": <${range[0]}〜${range[1]}の整数>, "reason": "観察結果の要約（日本語100文字以内）"}`;
+さらに、空きスペースが存在する位置を、この区画画像内の相対座標（0〜1）で1〜3個のボックスで示してください。
+空きスペースがなければ空配列[]を返してください。
+
+JSONで返してください:
+{
+  "pct": <${range[0]}〜${range[1]}の整数>,
+  "reason": "観察結果の要約（日本語100文字以内）",
+  "empty_boxes": [{"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 1.0}]
+}`;
 
   const decRes = await fetch("/api/analyze", {
     method: "POST",
@@ -372,7 +380,12 @@ export default function BentoCheckerPro() {
         const [y1r, y2r, x1r, x2r] = cropDefs[i];
         const b64 = await cropFileToBase64(imgFile, x1r, y1r, x2r, y2r);
         const res = await analyzeArea(b64, AREAS[i].name);
-        areaResults.push({ ...AREAS[i], pct: res.pct ?? 0, reason: res.reason ?? "" });
+        areaResults.push({
+          ...AREAS[i],
+          pct: res.pct ?? 0,
+          reason: res.reason ?? "",
+          empty_boxes: res.empty_boxes ?? []
+        });
         setProgress(Math.round(((i + 2) / (AREAS.length + 1)) * 100));
       }
 
@@ -480,7 +493,11 @@ export default function BentoCheckerPro() {
                     const [y1r, y2r, x1r, x2r] = def;
                     const colors = ["#ff3b30", "#0071e3", "#34c759"];
                     const labels = ["右上（メイン）", "左上（副菜A）", "右下（副菜B）"];
-                    const pct = results?.areas?.[i]?.pct;
+                    const area = results?.areas?.[i];
+                    const pct = area?.pct;
+                    const emptyBoxes = area?.empty_boxes || [];
+                    const areaW = x2r - x1r;
+                    const areaH = y2r - y1r;
                     return (
                       <div
                         key={i}
@@ -488,14 +505,31 @@ export default function BentoCheckerPro() {
                           position: "absolute",
                           left: `${x1r * 100}%`,
                           top: `${y1r * 100}%`,
-                          width: `${(x2r - x1r) * 100}%`,
-                          height: `${(y2r - y1r) * 100}%`,
+                          width: `${areaW * 100}%`,
+                          height: `${areaH * 100}%`,
                           border: `3px solid ${colors[i]}`,
                           borderRadius: 8,
                           boxSizing: "border-box",
                           pointerEvents: "none",
                         }}
                       >
+                        {/* 空きスペースのハイライト（半透明の黄色） */}
+                        {emptyBoxes.map((box, j) => (
+                          <div
+                            key={j}
+                            style={{
+                              position: "absolute",
+                              left: `${box.x1 * 100}%`,
+                              top: `${box.y1 * 100}%`,
+                              width: `${(box.x2 - box.x1) * 100}%`,
+                              height: `${(box.y2 - box.y1) * 100}%`,
+                              background: "rgba(255, 235, 59, 0.45)",
+                              border: "2px dashed #f5a623",
+                              boxSizing: "border-box",
+                              pointerEvents: "none",
+                            }}
+                          />
+                        ))}
                         <div style={{
                           position: "absolute",
                           top: -26,
