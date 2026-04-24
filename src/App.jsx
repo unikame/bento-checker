@@ -528,28 +528,12 @@ export default function BentoCheckerPro() {
         const b64 = await cropFileToBase64(imgFile, x1r, y1r, x2r, y2r);
         const res = await analyzeArea(b64, AREAS[i].name);
 
-        // ピクセル検出で実際のトレー露出ボックスと空き率を取得
-        const { boxes: detectedBoxes, emptyRatio } = await detectTrayEmptyAreas(imgFile, x1r, y1r, x2r, y2r);
-
-        // 右上メインの場合、ピクセル検出結果を主軸にして補正
-        let finalPct = res.pct ?? 0;
-        if (AREAS[i].key === "main") {
-          const pixelPct = Math.round(emptyRatio * 100);
-          // ピクセル検出とAI判定を組み合わせる
-          // ピクセル検出の結果を基準にAIの判定を加味
-          if (pixelPct >= 8) {
-            // ピクセル検出で8%以上空きが検出された場合
-            // AIの判定とピクセル検出の大きい方を採用（NG側に倒す）
-            finalPct = Math.max(finalPct, Math.min(pixelPct * 2, 30));
-          } else if (pixelPct < 3) {
-            // ピクセル検出でほぼ空きなし → AIが高すぎる場合は下げる
-            finalPct = Math.min(finalPct, 8);
-          }
-        }
+        // ピクセル検出で実際のトレー露出ボックスを取得（ハイライト表示のみに使用）
+        const { boxes: detectedBoxes } = await detectTrayEmptyAreas(imgFile, x1r, y1r, x2r, y2r);
 
         areaResults.push({
           ...AREAS[i],
-          pct: finalPct,
+          pct: res.pct ?? 0,
           reason: res.reason ?? "",
           empty_boxes: detectedBoxes
         });
