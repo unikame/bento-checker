@@ -34,14 +34,18 @@ function waitForOpenCV() {
   });
 }
 
+// OpenCVが検出した容器外枠を一時保存（デバッグ用）
+let lastContainerBox = null;
+
 // OpenCVで弁当容器の4区画を自動検出
 async function detectRegions(file) {
   try {
     await waitForOpenCV();
     if (!window.cv || !window.cv.Mat) {
-      console.warn("OpenCV not loaded, using default");
+      console.warn("[OpenCV] Not loaded, using default coordinates");
       return DEFAULT_CROP_DEFS;
     }
+    console.log("[OpenCV] Loaded, starting detection");
 
     // 画像をCanvasに読み込む
     const bitmap = await createImageBitmap(file);
@@ -103,9 +107,12 @@ async function detectRegions(file) {
     };
 
     if (!containerRect || maxArea < (w * h) * 0.2) {
+      console.warn("[OpenCV] Container not found or too small, using default. maxArea:", maxArea, "threshold:", w * h * 0.2);
       cleanup();
       return DEFAULT_CROP_DEFS;
     }
+
+    console.log("[OpenCV] Container detected:", containerRect, "area:", maxArea);
 
     // 容器の位置（画像全体に対する比率）
     const cx1 = containerRect.x / w;
@@ -137,16 +144,17 @@ async function detectRegions(file) {
 
     cleanup();
 
-    // 容器の矩形情報も返す（デバッグ用）
-    const result = [
+    // 容器の矩形情報を保存（デバッグ用）
+    lastContainerBox = { x1: cx1, y1: cy1, x2: cx2, y2: cy2 };
+
+    return [
       toImageCoord(containerRelative.main),
       toImageCoord(containerRelative.sub1),
       toImageCoord(containerRelative.sub2),
     ];
-    result.containerBox = { x1: cx1, y1: cy1, x2: cx2, y2: cy2 };
-    return result;
   } catch (e) {
     console.error("OpenCV detection failed:", e);
+    lastContainerBox = null;
     return DEFAULT_CROP_DEFS;
   }
 }
@@ -524,7 +532,7 @@ export default function BentoCheckerPro() {
       setProgressLabel("容器の位置を自動検出中（OpenCV）...");
       const cropDefs = await detectRegions(imgFile);
       setCropDefs(cropDefs);
-      if (cropDefs.containerBox) setContainerBox(cropDefs.containerBox);
+      setContainerBox(lastContainerBox);
 
       const areaResults = [];
       for (let i = 0; i < AREAS.length; i++) {
