@@ -153,7 +153,7 @@ async function detectTrayEmptyAreas(file, x1r, y1r, x2r, y2r) {
   const cw = Math.max(1, Math.floor(sw * (x2r - x1r)));
   const ch = Math.max(1, Math.floor(sh * (y2r - y1r)));
   // 解析用に縮小
-  const targetSize = 60;
+  const targetSize = 80;
   const scale = targetSize / Math.max(cw, ch);
   const ow = Math.max(10, Math.floor(cw * scale));
   const oh = Math.max(10, Math.floor(ch * scale));
@@ -165,18 +165,31 @@ async function detectTrayEmptyAreas(file, x1r, y1r, x2r, y2r) {
   const imgData = ctx.getImageData(0, 0, ow, oh);
   const data = imgData.data;
 
-  // トレー色判定: 赤茶色（R: 100-200, G: 30-90, B: 30-80）＆ R > G, R > B
+  // トレー色判定を厳密化:
+  // - 赤みが強く、緑青が暗い
+  // - 暗すぎず明るすぎない（プラスチックの光沢を考慮）
+  // - 食材の茶色（ハンバーグ、唐揚げなど）を除外するため、R/G比とR/B比を厳しく
   const mask = new Uint8Array(ow * oh);
   let emptyCount = 0;
   for (let i = 0; i < ow * oh; i++) {
     const r = data[i * 4];
     const g = data[i * 4 + 1];
     const b = data[i * 4 + 2];
+
+    // HSVに近い判定
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const saturation = max === 0 ? 0 : (max - min) / max;
+
     const isTrayColor =
-      r >= 90 && r <= 210 &&
-      g >= 20 && g <= 95 &&
-      b >= 20 && b <= 85 &&
-      r > g + 30 && r > b + 30;
+      r >= 110 && r <= 180 &&       // トレーの赤は中程度の明るさ
+      g >= 30 && g <= 75 &&          // 緑成分は低い
+      b >= 30 && b <= 75 &&          // 青成分も低い
+      r > g * 1.8 &&                 // 赤が緑より大幅に強い（食材の茶色を除外）
+      r > b * 1.8 &&                 // 赤が青より大幅に強い
+      Math.abs(g - b) < 25 &&        // 緑と青が近い値（純粋な赤茶色）
+      saturation > 0.45;             // 彩度が十分（くすんだ肉の色を除外）
+
     if (isTrayColor) {
       mask[i] = 1;
       emptyCount++;
@@ -184,7 +197,7 @@ async function detectTrayEmptyAreas(file, x1r, y1r, x2r, y2r) {
   }
 
   // グリッドで分割してトレー色が集中しているブロックを検出
-  const gridSize = 8; // 8x8のグリッド
+  const gridSize = 10;
   const cellW = Math.floor(ow / gridSize);
   const cellH = Math.floor(oh / gridSize);
   const boxes = [];
@@ -198,7 +211,8 @@ async function detectTrayEmptyAreas(file, x1r, y1r, x2r, y2r) {
           total++;
         }
       }
-      if (total > 0 && count / total > 0.4) {
+      // 60%以上のピクセルがトレー色の場合のみ空きとみなす（厳しめ）
+      if (total > 0 && count / total > 0.55) {
         boxes.push({
           x1: (gx * cellW) / ow,
           y1: (gy * cellH) / oh,
@@ -269,32 +283,42 @@ Return ONLY JSON: {"pct": number, "reason": "Japanese text"}`;
 【カウントしないもの】
 - 食材の表面や食材同士の凹凸（これは空きではない）
 - カップの中の見える隙間（カップ内は食材の範囲）
-- カップの周囲の「構造上の小さな余白」（仕切り板との隙間など）
 - 仕切り板の溝や枠
 
-【カウントするもの】
-- 食材・カップの外側で、赤茶色のトレー底面が明確に露出している部分
-- 主に「食材の横」「食材の下」「区画の端」など、本来食材やカップがあるべきなのに空いている部分
-- 区画の右端・左端・上端・下端など、広範囲にわたって露出している場合は特に注意
-
-【実例パターンの理解】
-- 例1（ぎっしり）: 全面が食材とカップで埋まり、トレー露出が全くない → 0-5%
-- 例2（やや余裕あり）: 卵焼きの横に手のひらサイズの小さな隙間が1箇所だけ → 10-17%
-- 例3（明確な空きあり）: 食材が区画の左側・中央に寄っていて、右端（または片側）に縦に長い広範囲の露出がある → 18-28%
-- 例4（明確な空きあり）: 食材間に複数の隙間があり、合計面積が区画の2割程度露出している → 18-28%
-- 例5（スカスカ）: 区画の半分近くがトレー露出 → 35%以上
+【カウントするもの（重要）】
+- 食材・カップの外側で、赤茶色のトレー底面が露出している部分
+- 区画の端（上下左右）に食材が届いていない部分
+- 食材間の隙間
 
 【観察してください】
-1. どの食材が見えるか？
-2. 食材の配置は？
-3. 赤茶色のトレー底面が露出している場所はどこか？
-   → 場所と大きさを具体的に記述（「卵焼きの右に幅の広い露出」「区画の右端全体に縦長の露出」など）
-4. 露出がなければ「露出なし」と記述
-5. 全体の印象として「ぎっしり」「やや余裕あり」「明確な空きあり」「スカスカ」のどれか？
+1. 食材は区画の中央/片寄って配置されているか？
+2. 区画の上端/下端/左端/右端それぞれに食材は届いているか？
+3. トレー底面が露出している箇所と、その大きさは？
+4. 全体の印象として「ぎっしり」「やや余裕あり」「明確な空きあり」「スカスカ」のどれか？
 
-【重要】
-露出が「1箇所の小さな隙間だけ」なら「やや余裕あり」
-露出が「複数箇所」または「片側全体にわたる広範囲」なら「明確な空きあり」
+【分類の基準（厳密に判定してください）】
+
+◆ ぎっしり (0-5%)
+- 食材が区画の端（上下左右すべて）にほぼ届いている
+- トレー底面の露出はほぼない
+- 例: パターンB（ヒレカツ弁当）のような詰まり方
+
+◆ やや余裕あり (10-17%)
+- 1箇所だけ小さな隙間がある
+- 例: 卵焼きの横に手のひらサイズの小さな隙間
+
+◆ 明確な空きあり (18-28%) ← 片寄り配置は必ずこれ
+- 食材が中央や片側に寄り、反対側に明確な空きがある
+- 区画の上/下/左/右のいずれかが食材で埋まっていない
+- 食材間に複数の隙間があり合計面積が2割程度
+
+◆ スカスカ (35-50%)
+- 半分近くが露出
+
+【重要な判定ルール】
+- 食材が区画の「左側または中央だけ」にあり、「右側が明確に空いている」 → 明確な空きあり
+- 食材が区画の「上側だけ」にあり、「下側が明確に空いている」 → 明確な空きあり
+- トレー露出が区画の端に沿って帯状に続いている → 明確な空きあり
 
 JSONで返してください: {"observation": "詳細な観察結果", "overall": "ぎっしり|やや余裕あり|明確な空きあり|スカスカ"}`;
 
@@ -469,12 +493,28 @@ export default function BentoCheckerPro() {
         const b64 = await cropFileToBase64(imgFile, x1r, y1r, x2r, y2r);
         const res = await analyzeArea(b64, AREAS[i].name);
 
-        // ピクセル検出で実際のトレー露出ボックスを取得
-        const { boxes: detectedBoxes } = await detectTrayEmptyAreas(imgFile, x1r, y1r, x2r, y2r);
+        // ピクセル検出で実際のトレー露出ボックスと空き率を取得
+        const { boxes: detectedBoxes, emptyRatio } = await detectTrayEmptyAreas(imgFile, x1r, y1r, x2r, y2r);
+
+        // 右上メインの場合、ピクセル検出結果を主軸にして補正
+        let finalPct = res.pct ?? 0;
+        if (AREAS[i].key === "main") {
+          const pixelPct = Math.round(emptyRatio * 100);
+          // ピクセル検出とAI判定を組み合わせる
+          // ピクセル検出の結果を基準にAIの判定を加味
+          if (pixelPct >= 8) {
+            // ピクセル検出で8%以上空きが検出された場合
+            // AIの判定とピクセル検出の大きい方を採用（NG側に倒す）
+            finalPct = Math.max(finalPct, Math.min(pixelPct * 2, 30));
+          } else if (pixelPct < 3) {
+            // ピクセル検出でほぼ空きなし → AIが高すぎる場合は下げる
+            finalPct = Math.min(finalPct, 8);
+          }
+        }
 
         areaResults.push({
           ...AREAS[i],
-          pct: res.pct ?? 0,
+          pct: finalPct,
           reason: res.reason ?? "",
           empty_boxes: detectedBoxes
         });
