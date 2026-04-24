@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import cv from "@techstark/opencv-js";
 
 const AREAS = [
   { name: "右上（メイン）", key: "main" },
@@ -20,12 +21,13 @@ const DEFAULT_CROP_DEFS = [
 // OpenCV.jsの準備を待つ
 function waitForOpenCV() {
   return new Promise((resolve) => {
-    if (window.cv && window.cv.Mat) {
+    if (cv && cv.Mat) {
       resolve();
       return;
     }
+    // モジュールが初期化されるまで待つ
     const check = setInterval(() => {
-      if (window.cv && window.cv.Mat) {
+      if (cv && cv.Mat) {
         clearInterval(check);
         resolve();
       }
@@ -41,7 +43,7 @@ let lastContainerBox = null;
 async function detectRegions(file) {
   try {
     await waitForOpenCV();
-    if (!window.cv || !window.cv.Mat) {
+    if (!cv || !cv.Mat) {
       console.warn("[OpenCV] Not loaded, using default coordinates");
       return DEFAULT_CROP_DEFS;
     }
@@ -60,7 +62,6 @@ async function detectRegions(file) {
     ctx.drawImage(bitmap, 0, 0, w, h);
     bitmap.close();
 
-    const cv = window.cv;
     const src = cv.imread(canvas);
     const hsv = new cv.Mat();
     cv.cvtColor(src, hsv, cv.COLOR_RGB2HSV);
