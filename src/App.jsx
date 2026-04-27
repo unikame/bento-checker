@@ -415,6 +415,38 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
   const ctx = canvas.getContext("2d");
   ctx.drawImage(bitmap, x1, y1, cw, ch, 0, 0, ow, oh);
   bitmap.close();
+
+  // 容器の側面（明るい赤）を黒く塗りつぶす（AIが側面を空きと誤認しないように）
+  const imgData = ctx.getImageData(0, 0, ow, oh);
+  const data = imgData.data;
+  for (let i = 0; i < ow * oh; i++) {
+    const r = data[i * 4];
+    const g = data[i * 4 + 1];
+    const b = data[i * 4 + 2];
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const saturation = max === 0 ? 0 : (max - min) / max;
+    const brightness = (r + g + b) / 3;
+
+    // 容器の側面: 明るい赤茶色（底面より明るい）
+    const isSide =
+      r >= 150 &&
+      g >= 30 && g <= 100 &&
+      b >= 30 && b <= 100 &&
+      r > g * 1.6 &&
+      r > b * 1.6 &&
+      Math.abs(g - b) < 30 &&
+      saturation > 0.4 &&
+      brightness > 80;
+
+    if (isSide) {
+      data[i * 4] = 0;
+      data[i * 4 + 1] = 0;
+      data[i * 4 + 2] = 0;
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+
   const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.85 });
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -429,7 +461,7 @@ async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
   });
 }
 
-// 画像内の赤茶色トレー部分をピクセル検出して、空きエリアのマスクを返す
+// 画像内の赤茶色トレー底面部分をピクセル検出して、空きエリアのマスクを返す
 async function detectTrayEmptyAreas(file, x1r, y1r, x2r, y2r) {
   const bitmap = await createImageBitmap(file);
   const sw = bitmap.width;
@@ -451,9 +483,11 @@ async function detectTrayEmptyAreas(file, x1r, y1r, x2r, y2r) {
   const imgData = ctx.getImageData(0, 0, ow, oh);
   const data = imgData.data;
 
-  // トレー底面色判定:
-  // - 側面の明るい赤は除外、暗い赤茶色の底面のみを検出
-  // - 食材の茶色も除外
+  // 容器底面の色判定（厳密化）:
+  // 底面は「暗い赤茶色」で、側面は「明るい赤」
+  // 底面の特徴: R=80-150, G=20-55, B=20-55, R/G比とR/B比が大きい
+  // 側面（除外）: R=180+, より明るい赤
+  // 食材の茶色（除外）: G/Bがもう少し高い
   const mask = new Uint8Array(ow * oh);
   let emptyCount = 0;
   for (let i = 0; i < ow * oh; i++) {
@@ -464,24 +498,26 @@ async function detectTrayEmptyAreas(file, x1r, y1r, x2r, y2r) {
     const max = Math.max(r, g, b);
     const min = Math.min(r, g, b);
     const saturation = max === 0 ? 0 : (max - min) / max;
+    const brightness = (r + g + b) / 3;
 
-    const isTrayColor =
-      r >= 100 && r <= 160 &&        // 底面の赤は中程度の明るさ（明るい側面を除外）
-      g >= 25 && g <= 60 &&          // 緑成分は低い
-      b >= 25 && b <= 60 &&          // 青成分も低い
-      r > g * 2.0 &&                 // 赤が緑より圧倒的に強い
-      r > b * 2.0 &&                 // 赤が青より圧倒的に強い
-      Math.abs(g - b) < 20 &&        // 緑と青が近い値
+    const isTrayBottom =
+      r >= 80 && r <= 150 &&         // 底面は中程度の暗さ
+      g >= 18 && g <= 55 &&          // 緑は低い
+      b >= 18 && b <= 55 &&          // 青も低い
+      r > g * 2.2 &&                 // 赤が緑より強い（食材茶色を除外）
+      r > b * 2.2 &&                 // 赤が青より強い
+      Math.abs(g - b) < 18 &&        // 緑と青が近い
       saturation > 0.55 &&           // 彩度が十分
-      max < 170;                     // 明るすぎない（側面のハイライトを除外）
+      brightness < 90 &&             // 全体的に暗い（明るい側面を除外）
+      r < 155;                       // 赤すぎない（側面のハイライトを除外）
 
-    if (isTrayColor) {
+    if (isTrayBottom) {
       mask[i] = 1;
       emptyCount++;
     }
   }
 
-  // グリッドで分割してトレー色が集中しているブロックを検出
+  // グリッドで分割してトレー底面色が集中しているブロックを検出
   const gridSize = 10;
   const cellW = Math.floor(ow / gridSize);
   const cellH = Math.floor(oh / gridSize);
@@ -496,7 +532,7 @@ async function detectTrayEmptyAreas(file, x1r, y1r, x2r, y2r) {
           total++;
         }
       }
-      // 60%以上のピクセルがトレー色の場合のみ空きとみなす（厳しめ）
+      // 60%以上のピクセルが底面色の場合のみ空きとみなす
       if (total > 0 && count / total > 0.55) {
         boxes.push({
           x1: (gx * cellW) / ow,
@@ -565,9 +601,13 @@ Return ONLY JSON: {"pct": number, "reason": "Japanese text"}`;
 【空きスペースの定義（重要）】
 空きスペース = 食材もカップも置かれておらず、赤茶色のトレー「底面」がむき出しに見えている部分のみ
 
+【画像の前処理について】
+この画像では、容器の側面（明るい赤の斜面）は事前に黒く塗りつぶされています。
+黒い部分は「容器の側面」なので、絶対に空きスペースとしてカウントしないでください。
+
 【絶対にカウントしないもの】
-- 容器の側面（区画の壁・斜面）※底面ではない部分
-- 区画の縁（食材が置けない立ち上がった部分）
+- 黒く塗りつぶされた部分（容器の側面・斜面）※前処理済み
+- 容器の縁（食材が置けない立ち上がった部分）
 - 食材の表面や食材同士の凹凸（これは空きではない）
 - カップの中の見える隙間（カップ内は食材の範囲）
 - 仕切り板の溝や枠
