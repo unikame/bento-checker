@@ -61,6 +61,108 @@ function saveCropDefs(cropDefs) {
 // OpenCVが検出した容器外枠を一時保存（デバッグ用）
 let lastContainerBox = null;
 
+// 画像を容器の範囲で切り抜いて、新しいFileオブジェクトを返す
+async function cropImageToContainer(file) {
+  try {
+    await waitForOpenCV();
+    if (!cv || !cv.Mat) {
+      console.warn("[OpenCV] Not loaded, returning original file");
+      return { croppedFile: file, success: false };
+    }
+    console.log("[OpenCV] Detecting container for cropping");
+
+    const bitmap = await createImageBitmap(file);
+    const maxSize = 1500;
+    const scale = Math.min(1, maxSize / Math.max(bitmap.width, bitmap.height));
+    const w = Math.floor(bitmap.width * scale);
+    const h = Math.floor(bitmap.height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    bitmap.close();
+
+    const src = cv.imread(canvas);
+    const hsv = new cv.Mat();
+    cv.cvtColor(src, hsv, cv.COLOR_RGB2HSV);
+
+    const mask1 = new cv.Mat();
+    const mask2 = new cv.Mat();
+    const redMask = new cv.Mat();
+    const low1 = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [0, 80, 50, 0]);
+    const high1 = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [15, 255, 200, 255]);
+    const low2 = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [160, 80, 50, 0]);
+    const high2 = new cv.Mat(hsv.rows, hsv.cols, hsv.type(), [180, 255, 200, 255]);
+    cv.inRange(hsv, low1, high1, mask1);
+    cv.inRange(hsv, low2, high2, mask2);
+    cv.bitwise_or(mask1, mask2, redMask);
+
+    const kernel = cv.Mat.ones(7, 7, cv.CV_8U);
+    cv.morphologyEx(redMask, redMask, cv.MORPH_CLOSE, kernel);
+    cv.morphologyEx(redMask, redMask, cv.MORPH_OPEN, kernel);
+
+    const contours = new cv.MatVector();
+    const hierarchy = new cv.Mat();
+    cv.findContours(redMask, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
+
+    let maxArea = 0;
+    let containerRect = null;
+    for (let i = 0; i < contours.size(); i++) {
+      const area = cv.contourArea(contours.get(i));
+      if (area > maxArea) {
+        maxArea = area;
+        containerRect = cv.boundingRect(contours.get(i));
+      }
+    }
+
+    const cleanup = () => {
+      src.delete(); hsv.delete();
+      mask1.delete(); mask2.delete(); redMask.delete();
+      low1.delete(); high1.delete(); low2.delete(); high2.delete();
+      kernel.delete();
+      contours.delete(); hierarchy.delete();
+    };
+
+    if (!containerRect || maxArea < (w * h) * 0.2) {
+      console.warn("[OpenCV] Container not found, using original");
+      cleanup();
+      return { croppedFile: file, success: false };
+    }
+
+    console.log("[OpenCV] Container detected for cropping:", containerRect);
+
+    cleanup();
+
+    // 容器領域を元の画像から切り出し（高解像度のまま）
+    const origW = await createImageBitmap(file).then(b => { const w = b.width; b.close(); return w; });
+    const origH = await createImageBitmap(file).then(b => { const h = b.height; b.close(); return h; });
+    const scaleBack = origW / w;
+
+    const cropX = Math.floor(containerRect.x * scaleBack);
+    const cropY = Math.floor(containerRect.y * scaleBack);
+    const cropW = Math.floor(containerRect.width * scaleBack);
+    const cropH = Math.floor(containerRect.height * scaleBack);
+
+    const origBitmap = await createImageBitmap(file);
+    const cropCanvas = document.createElement("canvas");
+    cropCanvas.width = cropW;
+    cropCanvas.height = cropH;
+    const cropCtx = cropCanvas.getContext("2d");
+    cropCtx.drawImage(origBitmap, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+    origBitmap.close();
+
+    // BlobをFileに変換
+    const blob = await new Promise(resolve => cropCanvas.toBlob(resolve, "image/jpeg", 0.92));
+    const croppedFile = new File([blob], "cropped.jpg", { type: "image/jpeg" });
+
+    return { croppedFile, success: true };
+  } catch (e) {
+    console.error("[OpenCV] Crop failed:", e);
+    return { croppedFile: file, success: false };
+  }
+}
+
 // OpenCVで弁当容器の4区画を自動検出
 async function detectRegions(file) {
   try {
@@ -669,16 +771,32 @@ export default function BentoCheckerPro() {
     setProgress(0);
 
     try {
-      // STEP 0: 容器の位置を検出
-      // 保存された座標があれば使用、なければOpenCVで自動検出
+      // STEP -1: 容器を切り抜いて正規化
+      setProgressLabel("容器を検出して画像を正規化中...");
+      const { croppedFile, success } = await cropImageToContainer(imgFile);
+
+      if (success) {
+        // 切り抜いた画像をプレビューに反映
+        const url = URL.createObjectURL(croppedFile);
+        setImgSrc(url);
+      }
+
+      // 解析対象ファイル（切り抜き済みまたは元のファイル）
+      const targetFile = croppedFile;
+
+      // STEP 0: 区画の位置を決定（保存座標 or デフォルト）
       const savedDefs = loadSavedCropDefs();
       let cropDefs;
       if (savedDefs) {
         setProgressLabel("保存された座標を使用中...");
         cropDefs = savedDefs;
       } else {
-        setProgressLabel("容器の位置を自動検出中（OpenCV）...");
-        cropDefs = await detectRegions(imgFile);
+        // 切り抜き済み画像なら、容器全体に対する固定比率を使用
+        cropDefs = success ? [
+          [0.05, 0.45, 0.36, 0.97],   // 右上（メイン）
+          [0.05, 0.45, 0.04, 0.34],   // 左上（副菜A）
+          [0.50, 0.95, 0.65, 0.97],   // 右下（副菜B）
+        ] : DEFAULT_CROP_DEFS;
       }
       setCropDefs(cropDefs);
       setContainerBox(lastContainerBox);
@@ -689,11 +807,11 @@ export default function BentoCheckerPro() {
         setProgress(Math.round(((i + 1) / (AREAS.length + 1)) * 100));
 
         const [y1r, y2r, x1r, x2r] = cropDefs[i];
-        const b64 = await cropFileToBase64(imgFile, x1r, y1r, x2r, y2r);
+        const b64 = await cropFileToBase64(targetFile, x1r, y1r, x2r, y2r);
         const res = await analyzeArea(b64, AREAS[i].name);
 
         // ピクセル検出で実際のトレー露出ボックスを取得（ハイライト表示のみに使用）
-        const { boxes: detectedBoxes } = await detectTrayEmptyAreas(imgFile, x1r, y1r, x2r, y2r);
+        const { boxes: detectedBoxes } = await detectTrayEmptyAreas(targetFile, x1r, y1r, x2r, y2r);
 
         areaResults.push({
           ...AREAS[i],
