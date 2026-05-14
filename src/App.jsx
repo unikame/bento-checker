@@ -905,9 +905,7 @@ export default function BentoCheckerPro() {
   };
 
   useEffect(() => {
-    if (imgFile && !results && !analyzing && !error) {
-      analyze();
-    }
+    // 自動解析しない：ユーザーが「解析開始」ボタンを押すまで待つ
   }, [imgFile]);
 
   // Apple風カラー
@@ -1120,6 +1118,32 @@ export default function BentoCheckerPro() {
                 </div>
               </div>
 
+              {/* 解析開始ボタン（編集モード中・解析中・結果あり は非表示） */}
+              {!editMode && !analyzing && !results && imgFile && (
+                <div style={{ marginTop: 20 }}>
+                  <button
+                    onClick={analyze}
+                    style={{
+                      background: "#0071e3",
+                      color: "white",
+                      border: "none",
+                      borderRadius: 28,
+                      padding: "16px 48px",
+                      fontSize: 18,
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      boxShadow: "0 4px 16px rgba(0,113,227,0.35)",
+                      letterSpacing: 0.5,
+                    }}
+                  >
+                    ▶ 解析開始
+                  </button>
+                  <div style={{ marginTop: 10, color: C.textSub, fontSize: 13 }}>
+                    枠がズレている場合は「✏️ 枠を調整」で修正してから解析してください
+                  </div>
+                </div>
+              )}
+
               {analyzing && (
                 <div style={{ marginTop: 24, background: C.card, borderRadius: 16, padding: 20, boxShadow: "0 2px 10px rgba(0,0,0,0.05)" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10, fontSize: 14 }}>
@@ -1139,10 +1163,16 @@ export default function BentoCheckerPro() {
               )}
 
               {!analyzing && (
-                <div style={{ display: "flex", justifyContent: "center", marginTop: 24 }}>
+                <div style={{ display: "flex", justifyContent: "center", gap: 12, marginTop: 24 }}>
+                  <button
+                    onClick={() => { setResults(null); setError(null); }}
+                    style={{ background: "transparent", color: C.accent, border: `2px solid ${C.accent}`, borderRadius: 30, padding: "14px 32px", cursor: "pointer", fontSize: 15, fontWeight: 500 }}
+                  >
+                    🔄 再解析
+                  </button>
                   <button
                     onClick={reset}
-                    style={{ background: C.accent, color: "white", border: "none", borderRadius: 30, padding: "14px 40px", cursor: "pointer", fontSize: 16, fontWeight: 500 }}
+                    style={{ background: C.accent, color: "white", border: "none", borderRadius: 30, padding: "14px 32px", cursor: "pointer", fontSize: 15, fontWeight: 500 }}
                   >
                     ＋ 新規スキャン
                   </button>
