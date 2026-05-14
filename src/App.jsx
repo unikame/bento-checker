@@ -746,12 +746,22 @@ export default function BentoCheckerPro() {
 
         const [y1r, y2r, x1r, x2r] = cropDefs[i];
         const b64 = await cropFileToBase64(targetFile, x1r, y1r, x2r, y2r);
-        const res = await analyzeArea(b64, AREAS[i].name);
+
+        // 3回判定して平均を取る（ブレを抑える）
+        const trials = 3;
+        let totalPct = 0;
+        let lastReason = "";
+        for (let t = 0; t < trials; t++) {
+          const res = await analyzeArea(b64, AREAS[i].name);
+          totalPct += res.pct ?? 0;
+          lastReason = res.reason ?? "";
+        }
+        const avgPct = Math.round(totalPct / trials);
 
         areaResults.push({
           ...AREAS[i],
-          pct: res.pct ?? 0,
-          reason: res.reason ?? "",
+          pct: avgPct,
+          reason: lastReason,
           empty_boxes: []
         });
       }
