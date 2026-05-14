@@ -721,6 +721,7 @@ export default function BentoCheckerPro() {
   const [editMode, setEditMode] = useState(false);
   const [dragState, setDragState] = useState(null);
   const imageContainerRef = useRef(null);
+  const imgRef = useRef(null);
   const fileRef = useRef(null);
 
   const handleFile = useCallback((file) => {
@@ -823,7 +824,10 @@ export default function BentoCheckerPro() {
     if (!editMode) return;
     e.preventDefault();
     e.stopPropagation();
-    const rect = imageContainerRef.current.getBoundingClientRect();
+    // imgタグの実際の表示サイズを基準にする
+    const rect = imgRef.current
+      ? imgRef.current.getBoundingClientRect()
+      : imageContainerRef.current.getBoundingClientRect();
     setDragState({ boxIndex, handle, rect });
   };
 
@@ -970,8 +974,9 @@ export default function BentoCheckerPro() {
           {imgSrc && (
             <div style={{ textAlign: "center" }}>
               <div style={{ background: C.card, borderRadius: 20, padding: 12, boxShadow: "0 2px 10px rgba(0,0,0,0.05)" }}>
-                <div ref={imageContainerRef} style={{ position: "relative", display: "inline-block", width: "85%" }}>
+                <div style={{ position: "relative", display: "inline-block", width: "85%" }}>
                   <img
+                    ref={(el) => { imgRef.current = el; imageContainerRef.current = el?.parentElement || null; }}
                     src={imgSrc}
                     alt="bento"
                     style={{ width: "100%", borderRadius: 12, display: "block" }}
