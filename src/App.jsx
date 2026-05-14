@@ -401,7 +401,7 @@ async function detectRegions(file) {
 }
 
 
-// 枠内の底面色を自動サンプリングして空白率を計算
+// 枠内の底面色をピクセル検出で空白率を計算
 async function calcEmptyRateByPixel(file, x1r, y1r, x2r, y2r) {
   const bitmap = await createImageBitmap(file);
   const sw = bitmap.width;
@@ -422,60 +422,32 @@ async function calcEmptyRateByPixel(file, x1r, y1r, x2r, y2r) {
 
   const imgData = ctx.getImageData(0, 0, ow, oh);
   const data = imgData.data;
-
-  // 枠の端（上下左右6%の帯）から底面色をサンプリング
-  const edgeW = Math.max(2, Math.floor(ow * 0.06));
-  const edgeH = Math.max(2, Math.floor(oh * 0.06));
-  const edgeSamples = [];
-
-  for (let y = 0; y < oh; y++) {
-    for (let x = 0; x < ow; x++) {
-      const isEdge = x < edgeW || x >= ow - edgeW || y < edgeH || y >= oh - edgeH;
-      if (!isEdge) continue;
-      const r = data[(y * ow + x) * 4];
-      const g = data[(y * ow + x) * 4 + 1];
-      const b = data[(y * ow + x) * 4 + 2];
-      if (r > g + 20 && r > b + 20 && r > 60 && r < 220) {
-        edgeSamples.push([r, g, b]);
-      }
-    }
-  }
-
-  if (edgeSamples.length < 10) {
-    return { rate: 0, debug: "サンプル不足" };
-  }
-
-  const meanR = edgeSamples.reduce((s, c) => s + c[0], 0) / edgeSamples.length;
-  const meanG = edgeSamples.reduce((s, c) => s + c[1], 0) / edgeSamples.length;
-  const meanB = edgeSamples.reduce((s, c) => s + c[2], 0) / edgeSamples.length;
-  const stdR = Math.sqrt(edgeSamples.reduce((s, c) => s + (c[0]-meanR)**2, 0) / edgeSamples.length);
-  const stdG = Math.sqrt(edgeSamples.reduce((s, c) => s + (c[1]-meanG)**2, 0) / edgeSamples.length);
-  const stdB = Math.sqrt(edgeSamples.reduce((s, c) => s + (c[2]-meanB)**2, 0) / edgeSamples.length);
-
-  const tolR = Math.max(25, stdR * 2.5);
-  const tolG = Math.max(20, stdG * 2.5);
-  const tolB = Math.max(20, stdB * 2.5);
-
-  let emptyCount = 0;
   const total = ow * oh;
 
+  // 底面（赤茶色）の条件:
+  // - 赤が強い（R > G*1.5 かつ R > B*1.5）
+  // - 暗い赤茶（60 < R < 170）→ 側面の明るい赤を除外
+  // - G と B が近い（|G-B| < 30）→ 純粋な赤茶色
+  // - G < 85, B < 85 → 食材の茶色を除外
+  let emptyCount = 0;
   for (let i = 0; i < total; i++) {
     const r = data[i * 4];
     const g = data[i * 4 + 1];
     const b = data[i * 4 + 2];
     if (
-      Math.abs(r - meanR) < tolR &&
-      Math.abs(g - meanG) < tolG &&
-      Math.abs(b - meanB) < tolB &&
-      r > g + 10 && r > b + 10
+      r > g * 1.5 &&
+      r > b * 1.5 &&
+      r > 60 && r < 170 &&
+      Math.abs(g - b) < 30 &&
+      g < 85 && b < 85
     ) {
       emptyCount++;
     }
   }
 
   const rate = Math.round(emptyCount / total * 100);
-  console.log(`[PixelCalc] 底面色: R=${meanR.toFixed(0)} G=${meanG.toFixed(0)} B=${meanB.toFixed(0)}, 空白率=${rate}%`);
-  return { rate, meanR, meanG, meanB };
+  console.log(`[PixelCalc] 空白率=${rate}% (${emptyCount}/${total}px)`);
+  return { rate };
 }
 
 async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
