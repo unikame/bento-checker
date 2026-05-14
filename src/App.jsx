@@ -609,7 +609,7 @@ async function analyzeArea(b64, areaName) {
 【底面としてカウントする】食材もカップも何もなく赤茶色の平らな底面が見えている部分
 【底面としてカウントしない】食材の表面・紙カップ・バラン・容器の側面や縁
 
-目安：食材でほぼ埋まっている→0〜5%、小さな隙間が少しある→5〜14%、明らかに空いている→15〜30%
+目安：食材でほぼ埋まっている→0〜5%、小さな隙間が少しある→5〜9%、明らかに空いている→10〜30%
 
 JSONのみ: {"pct": 整数, "reason": "底面が見える場所を具体的に（日本語80文字以内）"}`
     : `お弁当の「${areaName}」区画の画像です。
@@ -757,7 +757,7 @@ export default function BentoCheckerPro() {
       }
 
       const avg = areaResults.reduce((s, r) => s + r.pct, 0) / areaResults.length;
-      const isFail = areaResults.some((r) => r.pct >= 15);
+      const isFail = areaResults.some((r) => r.pct >= 10);
 
       setProgressLabel("総評を生成中...");
       const advice = await generateAdvice(areaResults);
@@ -1142,7 +1142,7 @@ export default function BentoCheckerPro() {
 
               {/* Area Cards */}
               {results.areas.map((area, i) => {
-                const fail = area.pct >= 15;
+                const fail = area.pct >= 10;
                 const frameColors = ["#ff3b30", "#0071e3", "#34c759"]; // 赤・青・緑
                 const frameColor = frameColors[i];
                 return (
