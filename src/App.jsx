@@ -447,7 +447,7 @@ async function calcEmptyRateByPixel(file, x1r, y1r, x2r, y2r) {
 
   const rate = Math.round(emptyCount / total * 100);
   console.log(`[PixelCalc] 空白率=${rate}% (${emptyCount}/${total}px)`);
-  return { rate };
+  return { rate, count: emptyCount };
 }
 
 async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
@@ -776,9 +776,14 @@ export default function BentoCheckerPro() {
   const [containerBox, setContainerBox] = useState(null);
   const [debugMode, setDebugMode] = useState(false);
   const [editMode, setEditMode] = useState(false);
+  const [dragState, setDragState] = useState(null);
+  const [emptyTrayData, setEmptyTrayData] = useState(() => {
+    try { const s = localStorage.getItem("emptyTrayData"); return s ? JSON.parse(s) : null; } catch { return null; }
+  });
   const imageContainerRef = useRef(null);
   const imgRef = useRef(null);
   const fileRef = useRef(null);
+  const emptyTrayRef = useRef(null);
 
   const handleFile = useCallback((file) => {
     if (!file) return;
@@ -828,7 +833,16 @@ export default function BentoCheckerPro() {
         const [y1r, y2r, x1r, x2r] = cropDefs[i];
 
         // ピクセル色検出で空白率を計算
-        const { rate: pixelRate } = await calcEmptyRateByPixel(targetFile, x1r, y1r, x2r, y2r);
+        const { rate: pixelRate, count: pixelCount } = await calcEmptyRateByPixel(targetFile, x1r, y1r, x2r, y2r);
+
+        // 空の弁当箱データがある場合は比較して算出
+        let finalRate = pixelRate;
+        if (emptyTrayData && emptyTrayData.emptyPixelCounts[i] > 0) {
+          // 空の弁当箱の底面量を100%として、今回の底面量との比率を計算
+          const emptyBase = emptyTrayData.emptyPixelCounts[i];
+          finalRate = Math.min(100, Math.round((pixelCount / emptyBase) * 100));
+          console.log(`[比較] ${AREAS[i].name}: 底面${pixelCount}px / 空時${emptyBase}px = ${finalRate}%`);
+        }
 
         // AIはreasonの文章生成のみに使用（数値はピクセル計算を使う）
         const b64 = await cropFileToBase64(targetFile, x1r, y1r, x2r, y2r);
@@ -836,7 +850,7 @@ export default function BentoCheckerPro() {
 
         areaResults.push({
           ...AREAS[i],
-          pct: pixelRate,
+          pct: finalRate,
           reason: res.reason ?? "",
           empty_boxes: []
         });
@@ -877,25 +891,85 @@ export default function BentoCheckerPro() {
     setCropDefs(loadSavedCropDefs() || DEFAULT_CROP_DEFS);
   };
 
-  const handleCropChange = (boxIndex, field, value) => {
-    const fieldMap = { y1: 0, y2: 1, x1: 2, x2: 3 };
-    const idx = fieldMap[field];
-    setCropDefs(prev => {
-      const newDefs = prev.map(d => [...d]);
-      newDefs[boxIndex][idx] = Math.round(value) / 100;
-      return newDefs;
-    });
+  // ドラッグ開始
+  const handleDragStart = (e, boxIndex, handle) => {
+    if (!editMode) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = imgRef.current.getBoundingClientRect();
+    const startX = (e.clientX - rect.left) / rect.width;
+    const startY = (e.clientY - rect.top) / rect.height;
+    setDragState({ boxIndex, handle, rect, startX, startY, startDef: [...cropDefs[boxIndex]] });
   };
+
+  useEffect(() => {
+    if (!dragState) return;
+    const handleMove = (e) => {
+      const { boxIndex, handle, rect, startX, startY, startDef } = dragState;
+      const curX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const curY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+      const dx = curX - startX;
+      const dy = curY - startY;
+      const [sy1, sy2, sx1, sx2] = startDef;
+      setCropDefs(prev => {
+        const nd = prev.map(d => [...d]);
+        if (handle === "move") {
+          nd[boxIndex] = [Math.max(0,sy1+dy), Math.min(1,sy2+dy), Math.max(0,sx1+dx), Math.min(1,sx2+dx)];
+        } else {
+          const n = [sy1,sy2,sx1,sx2];
+          if (handle.includes("n")) n[0] = Math.min(curY, sy2-0.03);
+          if (handle.includes("s")) n[1] = Math.max(curY, sy1+0.03);
+          if (handle.includes("w")) n[2] = Math.min(curX, sx2-0.03);
+          if (handle.includes("e")) n[3] = Math.max(curX, sx1+0.03);
+          nd[boxIndex] = n;
+        }
+        return nd;
+      });
+    };
+    const handleUp = () => setDragState(null);
+    window.addEventListener("mousemove", handleMove);
+    window.addEventListener("mouseup", handleUp);
+    return () => { window.removeEventListener("mousemove", handleMove); window.removeEventListener("mouseup", handleUp); };
+  }, [dragState]);
 
   const saveAndExitEdit = () => {
     saveCropDefs(cropDefs);
-    console.log("[座標] 保存しました:", JSON.stringify(cropDefs));
     setEditMode(false);
   };
 
   const resetSavedCoords = () => {
     localStorage.removeItem("savedCropDefs");
     setCropDefs(DEFAULT_CROP_DEFS);
+  };
+
+  // 空の弁当箱を登録
+  const registerEmptyTray = async (file) => {
+    const results = [];
+    const defs = loadSavedCropDefs() || DEFAULT_CROP_DEFS;
+    for (let i = 0; i < AREAS.length; i++) {
+      const [y1r, y2r, x1r, x2r] = defs[i];
+      const bitmap = await createImageBitmap(file);
+      const sw = bitmap.width; const sh = bitmap.height;
+      const x1 = Math.floor(sw*x1r); const y1 = Math.floor(sh*y1r);
+      const cw = Math.max(1,Math.floor(sw*(x2r-x1r))); const ch = Math.max(1,Math.floor(sh*(y2r-y1r)));
+      const canvas = new OffscreenCanvas(100,100);
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(bitmap, x1, y1, cw, ch, 0, 0, 100, 100);
+      bitmap.close();
+      const imgData = ctx.getImageData(0, 0, 100, 100);
+      // 全ピクセルの底面色ピクセル数を記録（=満杯の底面量）
+      let emptyPixels = 0;
+      const d = imgData.data;
+      for (let j = 0; j < 10000; j++) {
+        const r=d[j*4], g=d[j*4+1], b=d[j*4+2];
+        if (r>g*1.5 && r>b*1.5 && r>60 && r<170 && Math.abs(g-b)<30 && g<85 && b<85) emptyPixels++;
+      }
+      results.push(emptyPixels);
+    }
+    const data = { defs, emptyPixelCounts: results };
+    localStorage.setItem("emptyTrayData", JSON.stringify(data));
+    setEmptyTrayData(data);
+    alert(`空の弁当箱を登録しました！\n各区画の底面量: ${results.join(", ")} px`);
   };
 
   useEffect(() => {
@@ -929,61 +1003,28 @@ export default function BentoCheckerPro() {
         </div>
         <div style={{ display: "flex", gap: 10 }}>
           {imgSrc && !editMode && (
-            <button
-              onClick={() => setEditMode(true)}
-              style={{ background: "#0071e3", border: "none", color: "white", borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 500 }}
-            >
+            <button onClick={() => setEditMode(true)}
+              style={{ background: "#0071e3", border: "none", color: "white", borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 500 }}>
               ✏️ 枠を調整
             </button>
           )}
           {editMode && (
-            <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: 20, marginBottom: 16 }}>
-              <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 16, color: C.text }}>✏️ 枠の位置を調整（0〜100%）</div>
-              {cropDefs.map((def, i) => {
-                const [y1, y2, x1, x2] = def;
-                const colors = ["#ff3b30", "#0071e3", "#34c759"];
-                const labels = ["右上（メイン）", "左上（副菜A）", "右下（副菜B）"];
-                const fields = [
-                  { key: "x1", label: "左端", val: x1 },
-                  { key: "x2", label: "右端", val: x2 },
-                  { key: "y1", label: "上端", val: y1 },
-                  { key: "y2", label: "下端", val: y2 },
-                ];
-                return (
-                  <div key={i} style={{ marginBottom: 20, paddingBottom: 16, borderBottom: i < 2 ? `1px solid ${C.border}` : "none" }}>
-                    <div style={{ fontWeight: 600, color: colors[i], marginBottom: 10, fontSize: 14 }}>{labels[i]}</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                      {fields.map(({ key, label, val }) => (
-                        <div key={key}>
-                          <div style={{ fontSize: 12, color: C.textSub, marginBottom: 4 }}>
-                            {label}: <strong style={{ color: C.text }}>{Math.round(val * 100)}%</strong>
-                          </div>
-                          <input
-                            type="range"
-                            min={0} max={100} step={1}
-                            value={Math.round(val * 100)}
-                            onChange={(e) => handleCropChange(i, key, Number(e.target.value))}
-                            style={{ width: "100%", accentColor: colors[i] }}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-              <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-                <button onClick={saveAndExitEdit} style={{ background: "#34c759", color: "white", border: "none", borderRadius: 20, padding: "10px 24px", cursor: "pointer", fontWeight: 600, fontSize: 14 }}>
-                  ✓ 保存して終了
-                </button>
-                <button onClick={resetSavedCoords} style={{ background: "transparent", border: `1px solid ${C.border}`, color: C.textSub, borderRadius: 20, padding: "10px 20px", cursor: "pointer", fontSize: 14 }}>
-                  リセット
-                </button>
-                <button onClick={() => setEditMode(false)} style={{ background: "transparent", border: `1px solid ${C.border}`, color: C.textSub, borderRadius: 20, padding: "10px 20px", cursor: "pointer", fontSize: 14 }}>
-                  キャンセル
-                </button>
-              </div>
-            </div>
+            <>
+              <button onClick={saveAndExitEdit}
+                style={{ background: "#34c759", border: "none", color: "white", borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
+                ✓ 保存して終了
+              </button>
+              <button onClick={resetSavedCoords}
+                style={{ background: "transparent", border: `1px solid ${C.border}`, color: C.textSub, borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14 }}>
+                リセット
+              </button>
+            </>
           )}
+          <label style={{ background: emptyTrayData ? "#34c759" : "#f5a623", color: "white", border: "none", borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 500 }}>
+            📦 {emptyTrayData ? "空箱登録済み" : "空箱を登録"}
+            <input type="file" accept="image/*" style={{ display: "none" }} ref={emptyTrayRef}
+              onChange={(e) => { if (e.target.files[0]) registerEmptyTray(e.target.files[0]); e.target.value=""; }} />
+          </label>
           <button
             onClick={() => setDebugMode(!debugMode)}
             style={{ background: debugMode ? "#f5a623" : "transparent", border: `1px solid ${debugMode ? "#f5a623" : C.border}`, color: debugMode ? "white" : C.text, borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 500 }}
@@ -1061,49 +1102,45 @@ export default function BentoCheckerPro() {
                     const area = results?.areas?.[i];
                     const pct = area?.pct;
                     const emptyBoxes = area?.empty_boxes || [];
+                    const hs = 14;
                     return (
-                      <div
-                        key={i}
+                      <div key={i}
+                        onMouseDown={editMode ? (e) => handleDragStart(e, i, "move") : undefined}
                         style={{
                           position: "absolute",
-                          left: `${x1r * 100}%`,
-                          top: `${y1r * 100}%`,
-                          width: `${(x2r - x1r) * 100}%`,
-                          height: `${(y2r - y1r) * 100}%`,
+                          left: `${x1r*100}%`, top: `${y1r*100}%`,
+                          width: `${(x2r-x1r)*100}%`, height: `${(y2r-y1r)*100}%`,
                           border: `3px solid ${colors[i]}`,
-                          borderRadius: 8,
-                          boxSizing: "border-box",
-                          pointerEvents: "none",
+                          borderRadius: 8, boxSizing: "border-box",
+                          pointerEvents: editMode ? "auto" : "none",
+                          cursor: editMode ? "move" : "default",
                           background: editMode ? `${colors[i]}15` : "transparent",
-                        }}
-                      >
+                        }}>
                         {!editMode && emptyBoxes.map((box, j) => (
                           <div key={j} style={{
                             position: "absolute",
-                            left: `${box.x1 * 100}%`,
-                            top: `${box.y1 * 100}%`,
-                            width: `${(box.x2 - box.x1) * 100}%`,
-                            height: `${(box.y2 - box.y1) * 100}%`,
-                            background: "rgba(255,235,59,0.45)",
-                            border: "2px dashed #f5a623",
-                            boxSizing: "border-box",
-                            pointerEvents: "none",
+                            left: `${box.x1*100}%`, top: `${box.y1*100}%`,
+                            width: `${(box.x2-box.x1)*100}%`, height: `${(box.y2-box.y1)*100}%`,
+                            background: "rgba(255,235,59,0.45)", border: "2px dashed #f5a623",
+                            boxSizing: "border-box", pointerEvents: "none",
                           }} />
                         ))}
                         <div style={{
-                          position: "absolute",
-                          top: -26, left: -3,
-                          background: colors[i],
-                          color: "white",
-                          fontSize: 11,
-                          fontWeight: 600,
-                          padding: "2px 8px",
-                          borderRadius: 4,
-                          whiteSpace: "nowrap",
-                          pointerEvents: "none",
+                          position: "absolute", top: -26, left: -3,
+                          background: colors[i], color: "white",
+                          fontSize: 11, fontWeight: 600, padding: "2px 8px",
+                          borderRadius: 4, whiteSpace: "nowrap", pointerEvents: "none",
                         }}>
                           {labels[i]}{!editMode && pct !== undefined ? ` ${pct}%` : ""}
                         </div>
+                        {editMode && ["nw","ne","sw","se"].map(pos => {
+                          const s = { position:"absolute", width:hs, height:hs, background:colors[i], border:"2px solid white", borderRadius:"50%", cursor:`${pos}-resize`, boxShadow:"0 1px 3px rgba(0,0,0,0.3)" };
+                          if (pos.includes("n")) s.top = -hs/2;
+                          if (pos.includes("s")) s.bottom = -hs/2;
+                          if (pos.includes("w")) s.left = -hs/2;
+                          if (pos.includes("e")) s.right = -hs/2;
+                          return <div key={pos} onMouseDown={(e)=>handleDragStart(e,i,pos)} style={s} />;
+                        })}
                       </div>
                     );
                   })}
