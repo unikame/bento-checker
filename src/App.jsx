@@ -12,12 +12,11 @@ const AREAS = [
   { name: "右下（副菜B）", key: "sub2" },
 ];
 
-// サンプル画像（青=底面、緑=側面）から実測した正確な底面座標
-// 容器を切り抜いた後の相対座標（側面を除外するため内側に縮めた値）
+// 青緑マスク画像（底面=青、側面=緑）から算出した正確な底面座標
 const DEFAULT_CROP_DEFS = [
-  [0.023, 0.458, 0.379, 0.982],  // 右上（メイン）: y1, y2, x1, x2
-  [0.023, 0.458, 0.053, 0.363],  // 左上（副菜A）
-  [0.474, 0.952, 0.646, 0.982],  // 右下（副菜B）
+  [0.104, 0.411, 0.427, 0.929],  // 右上（メイン）: y1, y2, x1, x2
+  [0.109, 0.409, 0.159, 0.345],  // 左上（副菜A）
+  [0.546, 0.905, 0.712, 0.917],  // 右下（副菜B）
 ];
 
 // OpenCV.jsの準備を待つ
@@ -586,27 +585,30 @@ Return ONLY JSON: {"pct": number, "reason": "Japanese text"}`;
 
   // メインは2段階判定
   // STEP 1: 観察
-  const observePrompt = `右上メイン区画の画像を観察してください。
+  const observePrompt = `あなたはお弁当の右上メイン区画を検査しています。
 
-【空きスペースの定義】
-空きスペース = 食材もカップも置かれておらず、赤茶色のトレー底面が直接見えている部分
+この画像は【区画の底面のみ】を切り出したものです。
+側面・縁・斜面は除外済みです。
 
-【カウントしないもの】
-- 容器の側面・縁・斜面（黒く塗られた部分も含む）
-- 食材の表面・凹凸
-- カップ内の隙間
-- 仕切り板・溝
+【手順】
+STEP1: 画像内に見える食材を全て列挙してください。
+STEP2: 各食材が画像面積の何%を占めるか推定してください。
+STEP3: 食材が占める面積の合計を計算してください。
+STEP4: 100% - 食材合計% = 底面露出率（空白率）です。
 
-【カウントするもの】
-- 食材・カップの外側で赤茶色の底面が広く露出している部分
+【重要なルール】
+- 紙カップ・バランは食材と同じ扱い（底面を覆っている）
+- 食材同士の隙間でも、下に底面（赤茶色）が見えなければカウントしない
+- 底面（赤茶色の平らな部分）が直接見えている部分だけが空白
 
-【分類】
-◆ ぎっしり: 底面がほぼ見えない → 0-5%
-◆ やや余裕あり: 小さな底面露出が1〜2箇所 → 8-14%
-◆ 明確な空きあり: 底面が広範囲に露出 → 15-25%
-◆ スカスカ: 底面が半分近く露出 → 30-50%
+【判定基準】
+- 底面露出率 0-5%: ぎっしり
+- 底面露出率 6-14%: やや余裕あり  
+- 底面露出率 15-25%: 明確な空きあり
+- 底面露出率 26%以上: スカスカ
 
-JSONで返してください: {"observation": "観察結果", "overall": "ぎっしり|やや余裕あり|明確な空きあり|スカスカ"}`;
+JSONで返してください:
+{"foods": "食材リストと各面積%", "food_total": 食材合計%, "empty_pct": 底面露出率, "overall": "ぎっしり|やや余裕あり|明確な空きあり|スカスカ"}`;
 
   const obsRes = await fetch("/api/analyze", {
     method: "POST",
@@ -632,22 +634,27 @@ JSONで返してください: {"observation": "観察結果", "overall": "ぎっ
   const obsData = await obsRes.json();
   const obsText = obsData.content?.[0]?.text || "{}";
   const obsMatch = obsText.match(/\{[\s\S]*\}/);
-  let observation = { observation: "", overall: "やや余裕あり" };
+  let observation = { foods: "", food_total: 80, empty_pct: 10, overall: "やや余裕あり" };
   if (obsMatch) { try { observation = JSON.parse(obsMatch[0]); } catch {} }
 
-  // STEP 2: 数値決定
   const baseRange = {
     "ぎっしり": [0, 5],
-    "やや余裕あり": [8, 14],
+    "やや余裕あり": [6, 14],
     "明確な空きあり": [15, 25],
-    "スカスカ": [30, 50],
+    "スカスカ": [26, 50],
   };
-  const range = baseRange[observation.overall] || [8, 14];
+  const range = baseRange[observation.overall] || [6, 14];
+  // AIが計算した底面露出率をそのまま使いつつ、rangeでクリップ
+  const calcPct = Math.round(observation.empty_pct ?? ((100 - (observation.food_total ?? 80))));
 
-  const decidePrompt = `観察結果: ${observation.observation}
+  const decidePrompt = `観察結果:
+食材: ${observation.foods}
+食材合計面積: ${observation.food_total}%
+計算された底面露出率: ${calcPct}%
 全体評価: ${observation.overall}
 
-空きスペース率を${range[0]}〜${range[1]}%の範囲で整数で決定してください。
+この観察に基づき、底面露出率を${range[0]}〜${range[1]}%の範囲で整数で確定してください。
+計算値(${calcPct}%)が範囲内であればそのまま使用してください。
 
 JSONで返してください: {"pct": 整数, "reason": "日本語100文字以内"}`;
 
