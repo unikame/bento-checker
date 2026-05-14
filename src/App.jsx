@@ -822,8 +822,8 @@ export default function BentoCheckerPro() {
         const b64 = await cropFileToBase64(targetFile, x1r, y1r, x2r, y2r);
         const res = await analyzeArea(b64, AREAS[i].name);
 
-        // ピクセル検出で実際のトレー露出ボックスを取得（ハイライト表示のみに使用）
-        const { boxes: detectedBoxes } = await detectTrayEmptyAreas(targetFile, x1r, y1r, x2r, y2r);
+        // ピクセル検出ハイライトは精度不足のため無効化
+        const detectedBoxes = [];
 
         areaResults.push({
           ...AREAS[i],
