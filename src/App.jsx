@@ -10,9 +10,9 @@ const AREAS = [
 // サンプル画像（青=底面、緑=側面）から実測した正確な底面座標
 // 容器を切り抜いた後の相対座標（側面を除外するため内側に縮めた値）
 const DEFAULT_CROP_DEFS = [
-  [0.140, 0.385, 0.400, 0.900],  // 右上（メイン）: y1, y2, x1, x2
-  [0.100, 0.385, 0.100, 0.270],  // 左上（副菜A）
-  [0.560, 0.900, 0.700, 0.900],  // 右下（副菜B）
+  [0.023, 0.458, 0.379, 0.982],  // 右上（メイン）: y1, y2, x1, x2
+  [0.023, 0.458, 0.053, 0.363],  // 左上（副菜A）
+  [0.474, 0.952, 0.646, 0.982],  // 右下（副菜B）
 ];
 
 // OpenCV.jsの準備を待つ
@@ -726,33 +726,19 @@ export default function BentoCheckerPro() {
     try {
       // STEP -1: 容器を切り抜いて正規化
       setProgressLabel("容器を検出して画像を正規化中...");
-      const { croppedFile, success } = await cropImageToContainer(imgFile);
-
-      if (success) {
-        // 切り抜いた画像をプレビューに反映
-        const url = URL.createObjectURL(croppedFile);
-        setImgSrc(url);
-      }
-
-      // 解析対象ファイル（切り抜き済みまたは元のファイル）
-      const targetFile = croppedFile;
-
       // STEP 0: 区画の位置を決定（保存座標 or デフォルト）
+      // 切り抜き処理はせず、オリジナル画像のまま解析する
+      const targetFile = imgFile;
       const savedDefs = loadSavedCropDefs();
       let cropDefs;
       if (savedDefs) {
         setProgressLabel("保存された座標を使用中...");
         cropDefs = savedDefs;
       } else {
-        // 切り抜き済み画像なら、容器全体に対する固定比率を使用
-        cropDefs = success ? [
-          [0.140, 0.385, 0.400, 0.900],  // 右上（メイン）
-          [0.100, 0.385, 0.100, 0.270],  // 左上（副菜A）
-          [0.560, 0.900, 0.700, 0.900],  // 右下（副菜B）
-        ] : DEFAULT_CROP_DEFS;
+        setProgressLabel("デフォルト座標を使用中...");
+        cropDefs = DEFAULT_CROP_DEFS;
       }
       setCropDefs(cropDefs);
-      setContainerBox(lastContainerBox);
 
       const areaResults = [];
       for (let i = 0; i < AREAS.length; i++) {
