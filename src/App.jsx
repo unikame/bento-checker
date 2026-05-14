@@ -755,9 +755,11 @@ export default function BentoCheckerPro() {
       if (savedDefs) {
         setProgressLabel("保存された座標を使用中...");
         cropDefs = savedDefs;
+        console.log("[座標] 保存済み座標を使用:", JSON.stringify(savedDefs));
       } else {
         setProgressLabel("デフォルト座標を使用中...");
         cropDefs = DEFAULT_CROP_DEFS;
+        console.log("[座標] デフォルト座標を使用:", JSON.stringify(DEFAULT_CROP_DEFS));
       }
       setCropDefs(cropDefs);
 
@@ -870,6 +872,7 @@ export default function BentoCheckerPro() {
 
   const saveAndExitEdit = () => {
     saveCropDefs(cropDefs);
+    console.log("[座標] 保存しました:", JSON.stringify(cropDefs));
     setEditMode(false);
   };
 
