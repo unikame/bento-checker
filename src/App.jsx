@@ -745,7 +745,6 @@ export default function BentoCheckerPro() {
         setProgress(Math.round(((i + 1) / (AREAS.length + 1)) * 100));
 
         const [y1r, y2r, x1r, x2r] = cropDefs[i];
-        const [y1r, y2r, x1r, x2r] = cropDefs[i];
         const b64 = await cropFileToBase64(targetFile, x1r, y1r, x2r, y2r);
         const res = await analyzeArea(b64, AREAS[i].name);
 
