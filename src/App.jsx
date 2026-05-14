@@ -824,43 +824,42 @@ export default function BentoCheckerPro() {
     if (!editMode) return;
     e.preventDefault();
     e.stopPropagation();
-    // imgタグの実際の表示サイズを基準にする
-    const rect = imgRef.current
-      ? imgRef.current.getBoundingClientRect()
-      : imageContainerRef.current.getBoundingClientRect();
-    setDragState({ boxIndex, handle, rect });
+    const rect = imgRef.current.getBoundingClientRect();
+    // ドラッグ開始時のマウス位置と枠の初期座標を記録
+    const startX = (e.clientX - rect.left) / rect.width;
+    const startY = (e.clientY - rect.top) / rect.height;
+    setDragState({ boxIndex, handle, rect, startX, startY, startDef: [...cropDefs[boxIndex]] });
   };
 
   // ドラッグ中
   useEffect(() => {
     if (!dragState) return;
     const handleMove = (e) => {
-      const { boxIndex, handle, rect } = dragState;
-      const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+      const { boxIndex, handle, rect, startX, startY, startDef } = dragState;
+      const curX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      const curY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
+      const dx = curX - startX;
+      const dy = curY - startY;
+      const [sy1, sy2, sx1, sx2] = startDef;
 
       setCropDefs((prev) => {
         const newDefs = prev.map(d => [...d]);
-        const [y1, y2, x1, x2] = newDefs[boxIndex];
-
         if (handle === "move") {
-          // 中央ドラッグで移動
-          const cx = (x1 + x2) / 2;
-          const cy = (y1 + y2) / 2;
-          const dx = x - cx;
-          const dy = y - cy;
+          // 開始時の座標 + 移動量
           newDefs[boxIndex] = [
-            Math.max(0, y1 + dy),
-            Math.min(1, y2 + dy),
-            Math.max(0, x1 + dx),
-            Math.min(1, x2 + dx),
+            Math.max(0, sy1 + dy),
+            Math.min(1, sy2 + dy),
+            Math.max(0, sx1 + dx),
+            Math.min(1, sx2 + dx),
           ];
         } else {
-          // 角ドラッグでリサイズ
-          if (handle.includes("n")) newDefs[boxIndex][0] = Math.min(y, y2 - 0.05);
-          if (handle.includes("s")) newDefs[boxIndex][1] = Math.max(y, y1 + 0.05);
-          if (handle.includes("w")) newDefs[boxIndex][2] = Math.min(x, x2 - 0.05);
-          if (handle.includes("e")) newDefs[boxIndex][3] = Math.max(x, x1 + 0.05);
+          // 角ドラッグ: 開始時座標を基準にリサイズ
+          const n = [sy1, sy2, sx1, sx2];
+          if (handle.includes("n")) n[0] = Math.min(curY, sy2 - 0.03);
+          if (handle.includes("s")) n[1] = Math.max(curY, sy1 + 0.03);
+          if (handle.includes("w")) n[2] = Math.min(curX, sx2 - 0.03);
+          if (handle.includes("e")) n[3] = Math.max(curX, sx1 + 0.03);
+          newDefs[boxIndex] = n;
         }
         return newDefs;
       });
