@@ -604,29 +604,37 @@ async function analyzeArea(b64, areaName) {
   const prompt = isMain
     ? `お弁当の右上メイン区画の画像です。
 
-「赤茶色のトレー底面」が直接見えている面積を%で答えてください。
+この区画に見える食材・カップ・バランを全て列挙し、それぞれが区画面積の何%を占めるか推定してください。
+その合計を100%から引いた値が「底面露出率（空白率）」です。
 
-【底面としてカウントする】食材もカップも何もなく赤茶色の平らな底面が見えている部分
-【底面としてカウントしない】食材の表面・紙カップ・バラン・容器の側面や縁
+【ルール】
+- 食材・紙カップ・バランが覆っている部分 → 食材面積としてカウント
+- 容器の側面・縁・仕切り板 → カウントしない（区画面積に含めない）
+- 食材同士が重なっている場合は重複してカウントしない
 
-目安：食材でほぼ埋まっている→0〜5%、小さな隙間が少しある→5〜9%、明らかに空いている→10〜30%
+【出力例】
+卵焼き: 20%、ハンバーグ（カップ含む）: 40%、煎餅2枚: 30%
+合計: 90% → 空白率: 10%
 
-JSONのみ: {"pct": 整数, "reason": "底面が見える場所を具体的に（日本語80文字以内）"}`
+JSONのみ: {"items": [{"name": "食材名", "pct": 面積%}], "food_total": 合計%, "empty_pct": 空白率%}`
     : `お弁当の「${areaName}」区画の画像です。
 
-「赤茶色のトレー底面」が直接見えている面積を%で答えてください。
+この区画に見える食材・カップ・バランを全て列挙し、それぞれが区画面積の何%を占めるか推定してください。
+その合計を100%から引いた値が「底面露出率（空白率）」です。
 
-【底面としてカウントする】食材もカップも何もなく赤茶色の平らな底面が見えている部分
-【底面としてカウントしない】食材・紙カップ・バランの表面、カップ間の自然な隙間
+【ルール】
+- 紙カップ・バランが覆っている部分 → 食材面積としてカウント
+- カップ間の隙間でもカップが底面を覆っていれば食材面積
+- 容器の側面・縁 → カウントしない
 
-JSONのみ: {"pct": 整数, "reason": "日本語50文字以内"}`;
+JSONのみ: {"items": [{"name": "食材名", "pct": 面積%}], "food_total": 合計%, "empty_pct": 空白率%}`;
 
   const res = await fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-20250514",
-      max_tokens: 200,
+      max_tokens: 400,
       messages: [{ role: "user", content: [
         { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
         { type: "text", text: prompt },
@@ -639,8 +647,16 @@ JSONのみ: {"pct": 整数, "reason": "日本語50文字以内"}`;
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("JSON not found");
   const result = JSON.parse(match[0]);
-  result.pct = Math.max(0, Math.min(100, result.pct ?? 0));
-  return result;
+
+  // food_total から空白率を逆算
+  const foodTotal = Math.min(100, result.food_total ?? 85);
+  const emptyPct = result.empty_pct ?? Math.max(0, 100 - foodTotal);
+  const itemsDesc = (result.items ?? []).map(it => `${it.name}${it.pct}%`).join("、");
+
+  return {
+    pct: Math.max(0, Math.min(100, Math.round(emptyPct))),
+    reason: itemsDesc ? `食材合計${foodTotal}% (${itemsDesc})` : ""
+  };
 }
 
 
