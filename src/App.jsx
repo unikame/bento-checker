@@ -400,6 +400,84 @@ async function detectRegions(file) {
   }
 }
 
+
+// 枠内の底面色を自動サンプリングして空白率を計算
+async function calcEmptyRateByPixel(file, x1r, y1r, x2r, y2r) {
+  const bitmap = await createImageBitmap(file);
+  const sw = bitmap.width;
+  const sh = bitmap.height;
+  const x1 = Math.floor(sw * x1r);
+  const y1 = Math.floor(sh * y1r);
+  const cw = Math.max(1, Math.floor(sw * (x2r - x1r)));
+  const ch = Math.max(1, Math.floor(sh * (y2r - y1r)));
+
+  const targetSize = 200;
+  const scale = targetSize / Math.max(cw, ch);
+  const ow = Math.max(10, Math.floor(cw * scale));
+  const oh = Math.max(10, Math.floor(ch * scale));
+  const canvas = new OffscreenCanvas(ow, oh);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, x1, y1, cw, ch, 0, 0, ow, oh);
+  bitmap.close();
+
+  const imgData = ctx.getImageData(0, 0, ow, oh);
+  const data = imgData.data;
+
+  // 枠の端（上下左右6%の帯）から底面色をサンプリング
+  const edgeW = Math.max(2, Math.floor(ow * 0.06));
+  const edgeH = Math.max(2, Math.floor(oh * 0.06));
+  const edgeSamples = [];
+
+  for (let y = 0; y < oh; y++) {
+    for (let x = 0; x < ow; x++) {
+      const isEdge = x < edgeW || x >= ow - edgeW || y < edgeH || y >= oh - edgeH;
+      if (!isEdge) continue;
+      const r = data[(y * ow + x) * 4];
+      const g = data[(y * ow + x) * 4 + 1];
+      const b = data[(y * ow + x) * 4 + 2];
+      if (r > g + 20 && r > b + 20 && r > 60 && r < 220) {
+        edgeSamples.push([r, g, b]);
+      }
+    }
+  }
+
+  if (edgeSamples.length < 10) {
+    return { rate: 0, debug: "サンプル不足" };
+  }
+
+  const meanR = edgeSamples.reduce((s, c) => s + c[0], 0) / edgeSamples.length;
+  const meanG = edgeSamples.reduce((s, c) => s + c[1], 0) / edgeSamples.length;
+  const meanB = edgeSamples.reduce((s, c) => s + c[2], 0) / edgeSamples.length;
+  const stdR = Math.sqrt(edgeSamples.reduce((s, c) => s + (c[0]-meanR)**2, 0) / edgeSamples.length);
+  const stdG = Math.sqrt(edgeSamples.reduce((s, c) => s + (c[1]-meanG)**2, 0) / edgeSamples.length);
+  const stdB = Math.sqrt(edgeSamples.reduce((s, c) => s + (c[2]-meanB)**2, 0) / edgeSamples.length);
+
+  const tolR = Math.max(25, stdR * 2.5);
+  const tolG = Math.max(20, stdG * 2.5);
+  const tolB = Math.max(20, stdB * 2.5);
+
+  let emptyCount = 0;
+  const total = ow * oh;
+
+  for (let i = 0; i < total; i++) {
+    const r = data[i * 4];
+    const g = data[i * 4 + 1];
+    const b = data[i * 4 + 2];
+    if (
+      Math.abs(r - meanR) < tolR &&
+      Math.abs(g - meanG) < tolG &&
+      Math.abs(b - meanB) < tolB &&
+      r > g + 10 && r > b + 10
+    ) {
+      emptyCount++;
+    }
+  }
+
+  const rate = Math.round(emptyCount / total * 100);
+  console.log(`[PixelCalc] 底面色: R=${meanR.toFixed(0)} G=${meanG.toFixed(0)} B=${meanB.toFixed(0)}, 空白率=${rate}%`);
+  return { rate, meanR, meanG, meanB };
+}
+
 async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
   const bitmap = await createImageBitmap(file);
   const sw = bitmap.width;
@@ -776,17 +854,19 @@ export default function BentoCheckerPro() {
         setProgress(Math.round(((i + 1) / (AREAS.length + 1)) * 100));
 
         const [y1r, y2r, x1r, x2r] = cropDefs[i];
+
+        // ピクセル色検出で空白率を計算
+        const { rate: pixelRate } = await calcEmptyRateByPixel(targetFile, x1r, y1r, x2r, y2r);
+
+        // AIはreasonの文章生成のみに使用（数値はピクセル計算を使う）
         const b64 = await cropFileToBase64(targetFile, x1r, y1r, x2r, y2r);
         const res = await analyzeArea(b64, AREAS[i].name);
 
-        // ピクセル検出ハイライトは精度不足のため無効化
-        const detectedBoxes = [];
-
         areaResults.push({
           ...AREAS[i],
-          pct: res.pct ?? 0,
+          pct: pixelRate,
           reason: res.reason ?? "",
-          empty_boxes: detectedBoxes
+          empty_boxes: []
         });
         setProgress(Math.round(((i + 2) / (AREAS.length + 1)) * 100));
       }
