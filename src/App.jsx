@@ -601,114 +601,27 @@ async function detectTrayEmptyAreas(file, x1r, y1r, x2r, y2r) {
 async function analyzeArea(b64, areaName) {
   const isMain = areaName.includes("メイン") || areaName.includes("右上");
 
-  if (!isMain) {
-    const prompt = `You are inspecting "${areaName}" section of a bento tray (not main section).
+  const prompt = isMain
+    ? `お弁当の右上メイン区画の画像です。
 
-RULES:
-1. If food is placed DIRECTLY on tray (not in cups):
-   - Count large empty gaps as 15-25%
-2. If ALL food is only in paper cups:
-   - Return 0% (cup gaps are normal and acceptable)
-3. DO NOT count small gaps between cups
+「赤茶色のトレー底面」が直接見えている面積を%で答えてください。
 
-Return ONLY JSON: {"pct": number, "reason": "Japanese text"}`;
+【底面としてカウントする】食材もカップも何もなく赤茶色の平らな底面が見えている部分
+【底面としてカウントしない】食材の表面・紙カップ・バラン・容器の側面や縁
 
-    const res = await fetch("/api/analyze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 200,
-        messages: [{ role: "user", content: [
-          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
-          { type: "text", text: prompt },
-        ]}],
-      }),
-    });
-    if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || `API error ${res.status}`); }
-    const data = await res.json();
-    const text = data.content?.[0]?.text || "{}";
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("JSON not found");
-    return JSON.parse(match[0]);
-  }
+目安：食材でほぼ埋まっている→0〜5%、小さな隙間が少しある→5〜14%、明らかに空いている→15〜30%
 
-  // メインは2段階判定
-  // STEP 1: 観察
-  const observePrompt = `あなたはお弁当の右上メイン区画を検査しています。
+JSONのみ: {"pct": 整数, "reason": "底面が見える場所を具体的に（日本語80文字以内）"}`
+    : `お弁当の「${areaName}」区画の画像です。
 
-この画像は【区画の底面のみ】を切り出したものです。
-側面・縁・斜面は除外済みです。
+「赤茶色のトレー底面」が直接見えている面積を%で答えてください。
 
-【手順】
-STEP1: 画像内に見える食材を全て列挙してください。
-STEP2: 各食材が画像面積の何%を占めるか推定してください。
-STEP3: 食材が占める面積の合計を計算してください。
-STEP4: 100% - 食材合計% = 底面露出率（空白率）です。
+【底面としてカウントする】食材もカップも何もなく赤茶色の平らな底面が見えている部分
+【底面としてカウントしない】食材・紙カップ・バランの表面、カップ間の自然な隙間
 
-【重要なルール】
-- 紙カップ・バランは食材と同じ扱い（底面を覆っている）
-- 食材同士の隙間でも、下に底面（赤茶色）が見えなければカウントしない
-- 底面（赤茶色の平らな部分）が直接見えている部分だけが空白
+JSONのみ: {"pct": 整数, "reason": "日本語50文字以内"}`;
 
-【判定基準】
-- 底面露出率 0-5%: ぎっしり
-- 底面露出率 6-14%: やや余裕あり  
-- 底面露出率 15-25%: 明確な空きあり
-- 底面露出率 26%以上: スカスカ
-
-JSONで返してください:
-{"foods": "食材リストと各面積%", "food_total": 食材合計%, "empty_pct": 底面露出率, "overall": "ぎっしり|やや余裕あり|明確な空きあり|スカスカ"}`;
-
-  const obsRes = await fetch("/api/analyze", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 400,
-      messages: [{ role: "user", content: [
-        { type: "text", text: "以下の3枚は学習サンプルです。" },
-        { type: "text", text: "【サンプル1: PASS（ぎっしり）】食材が区画全体を覆っており底面が見えない。空き率0-5%が正解。" },
-        { type: "image", source: { type: "base64", media_type: "image/jpeg", data: SAMPLE_PASS } },
-        { type: "text", text: "【サンプル2: FAIL（明確な空きあり）】卵焼きの左側に底面が広く露出。空き率15-25%が正解。" },
-        { type: "image", source: { type: "base64", media_type: "image/jpeg", data: SAMPLE_FAIL_A } },
-        { type: "text", text: "【サンプル3: FAIL（空きあり）】食材が右寄りで左側に底面露出。空き率15-25%が正解。" },
-        { type: "image", source: { type: "base64", media_type: "image/jpeg", data: SAMPLE_FAIL_C } },
-        { type: "text", text: "---\n以上のサンプルを参考に、次の画像を判定してください。" },
-        { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
-        { type: "text", text: observePrompt },
-      ]}],
-    }),
-  });
-  if (!obsRes.ok) { const e = await obsRes.json(); throw new Error(e.error?.message || "observation error"); }
-  const obsData = await obsRes.json();
-  const obsText = obsData.content?.[0]?.text || "{}";
-  const obsMatch = obsText.match(/\{[\s\S]*\}/);
-  let observation = { foods: "", food_total: 80, empty_pct: 10, overall: "やや余裕あり" };
-  if (obsMatch) { try { observation = JSON.parse(obsMatch[0]); } catch {} }
-
-  const baseRange = {
-    "ぎっしり": [0, 5],
-    "やや余裕あり": [6, 14],
-    "明確な空きあり": [15, 25],
-    "スカスカ": [26, 50],
-  };
-  const range = baseRange[observation.overall] || [6, 14];
-  // AIが計算した底面露出率をそのまま使いつつ、rangeでクリップ
-  const calcPct = Math.round(observation.empty_pct ?? ((100 - (observation.food_total ?? 80))));
-
-  const decidePrompt = `観察結果:
-食材: ${observation.foods}
-食材合計面積: ${observation.food_total}%
-計算された底面露出率: ${calcPct}%
-全体評価: ${observation.overall}
-
-この観察に基づき、底面露出率を${range[0]}〜${range[1]}%の範囲で整数で確定してください。
-計算値(${calcPct}%)が範囲内であればそのまま使用してください。
-
-JSONで返してください: {"pct": 整数, "reason": "日本語100文字以内"}`;
-
-  const decRes = await fetch("/api/analyze", {
+  const res = await fetch("/api/analyze", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -716,19 +629,20 @@ JSONで返してください: {"pct": 整数, "reason": "日本語100文字以�
       max_tokens: 200,
       messages: [{ role: "user", content: [
         { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
-        { type: "text", text: decidePrompt },
+        { type: "text", text: prompt },
       ]}],
     }),
   });
-  if (!decRes.ok) { const e = await decRes.json(); throw new Error(e.error?.message || "decision error"); }
-  const decData = await decRes.json();
-  const decText = decData.content?.[0]?.text || "{}";
-  const decMatch = decText.match(/\{[\s\S]*\}/);
-  if (!decMatch) throw new Error("JSON not found in decision");
-  const result = JSON.parse(decMatch[0]);
-  result.pct = Math.max(range[0], Math.min(range[1], result.pct ?? range[0]));
+  if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || `API error ${res.status}`); }
+  const data = await res.json();
+  const text = data.content?.[0]?.text || "{}";
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("JSON not found");
+  const result = JSON.parse(match[0]);
+  result.pct = Math.max(0, Math.min(100, result.pct ?? 0));
   return result;
 }
+
 
 async function generateAdvice(areaResults) {
   const summary = areaResults.map(r => `${r.name}: ${r.pct}% (${r.reason})`).join("\n");
@@ -831,30 +745,16 @@ export default function BentoCheckerPro() {
         setProgress(Math.round(((i + 1) / (AREAS.length + 1)) * 100));
 
         const [y1r, y2r, x1r, x2r] = cropDefs[i];
-
-        // ピクセル色検出で空白率を計算
-        const { rate: pixelRate, count: pixelCount } = await calcEmptyRateByPixel(targetFile, x1r, y1r, x2r, y2r);
-
-        // 空の弁当箱データがある場合は比較して算出
-        let finalRate = pixelRate;
-        if (emptyTrayData && emptyTrayData.emptyPixelCounts[i] > 0) {
-          // 空の弁当箱の底面量を100%として、今回の底面量との比率を計算
-          const emptyBase = emptyTrayData.emptyPixelCounts[i];
-          finalRate = Math.min(100, Math.round((pixelCount / emptyBase) * 100));
-          console.log(`[比較] ${AREAS[i].name}: 底面${pixelCount}px / 空時${emptyBase}px = ${finalRate}%`);
-        }
-
-        // AIはreasonの文章生成のみに使用（数値はピクセル計算を使う）
+        const [y1r, y2r, x1r, x2r] = cropDefs[i];
         const b64 = await cropFileToBase64(targetFile, x1r, y1r, x2r, y2r);
         const res = await analyzeArea(b64, AREAS[i].name);
 
         areaResults.push({
           ...AREAS[i],
-          pct: finalRate,
+          pct: res.pct ?? 0,
           reason: res.reason ?? "",
           empty_boxes: []
         });
-        setProgress(Math.round(((i + 2) / (AREAS.length + 1)) * 100));
       }
 
       const avg = areaResults.reduce((s, r) => s + r.pct, 0) / areaResults.length;
