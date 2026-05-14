@@ -652,39 +652,6 @@ JSONのみ返してください: {"pct": 整数, "reason": "底面が見えて�
   return result;
 }
 
-    const res = await fetch("/api/analyze", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 300,
-        messages: [{
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: b64 } },
-            { type: "text", text: prompt },
-          ],
-        }],
-      }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.error?.message || `API error ${res.status}`);
-    }
-
-    const data = await res.json();
-    const text = data.content?.[0]?.text || "{}";
-    const match = text.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error("JSON not found");
-    return JSON.parse(match[0]);
-  }
-
-  // メインは直接%を聞く（新方式 - 上のanalyzeAreaで処理済み）
-  // ここには到達しない
-  return { pct: 0, reason: "" };
-}
-
 async function generateAdvice(areaResults) {
   const summary = areaResults.map(r => `${r.name}: ${r.pct}% (${r.reason})`).join("\n");
   const prompt = `以下は日本のお弁当の3区画それぞれの空きスペース評価結果です:
