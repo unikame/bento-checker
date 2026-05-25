@@ -602,39 +602,32 @@ async function analyzeArea(b64, areaName) {
   const isMain = areaName.includes("メイン") || areaName.includes("右上");
 
   const prompt = isMain
-    ? `お弁当の右上メイン区画の画像です。この画像が「枠線内の100%」です。
+    ? `お弁当の右上メイン区画の画像です。
 
-【質問】この枠線内で、食材・紙カップ・バランが置かれていない「赤茶色のトレー底面が見えている部分」は何%ですか？
+この区画に見える食材・カップ・バランを全て列挙し、それぞれが区画面積の何%を占めるか推定してください。
+その合計を100%から引いた値が「底面露出率（空白率）」です。
 
-【手順】
-1. 枠線内に見える食材・カップ・バランを全て列挙する
-2. それぞれが枠線内面積の何%を占めるか推定する（合計が100%を超えないよう注意）
-3. 食材合計% を 100% から引く → これが空白率
+【ルール】
+- 食材・紙カップ・バランが覆っている部分 → 食材面積としてカウント
+- 容器の側面・縁・仕切り板 → カウントしない（区画面積に含めない）
+- 食材同士が重なっている場合は重複してカウントしない
 
-【空白としてカウントする】
-- 枠線内で食材もカップも何もなく、赤茶色の底面が直接見えている部分のみ
+【出力例】
+卵焼き: 20%、ハンバーグ（カップ含む）: 40%、煎餅2枚: 30%
+合計: 90% → 空白率: 10%
 
-【空白としてカウントしない】
-- 食材・カップ・バランの表面
-- 容器の側面・縁（画像の端に見える斜面）
+JSONのみ: {"items": [{"name": "食材名", "pct": 面積%}], "food_total": 合計%, "empty_pct": 空白率%}`
+    : `お弁当の「${areaName}」区画の画像です。
 
-JSONのみ返してください:
-{"items": [{"name": "食材名", "pct": 数値}], "food_total": 食材合計%, "empty_pct": 空白率%}`
-    : `お弁当の「${areaName}」区画の画像です。この画像が「枠線内の100%」です。
+この区画に見える食材・カップ・バランを全て列挙し、それぞれが区画面積の何%を占めるか推定してください。
+その合計を100%から引いた値が「底面露出率（空白率）」です。
 
-【質問】この枠線内で、食材・紙カップ・バランが置かれていない「赤茶色のトレー底面が見えている部分」は何%ですか？
+【ルール】
+- 紙カップ・バランが覆っている部分 → 食材面積としてカウント
+- カップ間の隙間でもカップが底面を覆っていれば食材面積
+- 容器の側面・縁 → カウントしない
 
-【手順】
-1. 枠線内に見える食材・カップ・バランを全て列挙する
-2. それぞれが枠線内面積の何%を占めるか推定する
-3. 食材合計% を 100% から引く → これが空白率
-
-【空白としてカウントしない】
-- 食材・カップ・バランの表面
-- カップ間の隙間（カップが底面を覆っていれば0%）
-
-JSONのみ返してください:
-{"items": [{"name": "食材名", "pct": 数値}], "food_total": 食材合計%, "empty_pct": 空白率%}`;
+JSONのみ: {"items": [{"name": "食材名", "pct": 面積%}], "food_total": 合計%, "empty_pct": 空白率%}`;
 
   const res = await fetch("/api/analyze", {
     method: "POST",
@@ -829,42 +822,30 @@ export default function BentoCheckerPro() {
     e.preventDefault();
     e.stopPropagation();
     const rect = imgRef.current.getBoundingClientRect();
-    const mouseX = (e.clientX - rect.left) / rect.width;
-    const mouseY = (e.clientY - rect.top) / rect.height;
-    // ドラッグ開始時点の枠座標をスナップショット
-    setDragState({
-      boxIndex, handle, rect,
-      mouseStartX: mouseX,
-      mouseStartY: mouseY,
-      defStart: [...cropDefs[boxIndex]]
-    });
+    const startX = (e.clientX - rect.left) / rect.width;
+    const startY = (e.clientY - rect.top) / rect.height;
+    setDragState({ boxIndex, handle, rect, startX, startY, startDef: [...cropDefs[boxIndex]] });
   };
 
   useEffect(() => {
     if (!dragState) return;
     const handleMove = (e) => {
-      const { boxIndex, handle, rect, mouseStartX, mouseStartY, defStart } = dragState;
+      const { boxIndex, handle, rect, startX, startY, startDef } = dragState;
       const curX = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       const curY = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-      const dx = curX - mouseStartX;
-      const dy = curY - mouseStartY;
-      const [sy1, sy2, sx1, sx2] = defStart;
-
+      const dx = curX - startX;
+      const dy = curY - startY;
+      const [sy1, sy2, sx1, sx2] = startDef;
       setCropDefs(prev => {
         const nd = prev.map(d => [...d]);
         if (handle === "move") {
-          nd[boxIndex] = [
-            Math.max(0, sy1 + dy),
-            Math.min(1, sy2 + dy),
-            Math.max(0, sx1 + dx),
-            Math.min(1, sx2 + dx),
-          ];
+          nd[boxIndex] = [Math.max(0,sy1+dy), Math.min(1,sy2+dy), Math.max(0,sx1+dx), Math.min(1,sx2+dx)];
         } else {
-          const n = [...defStart];
-          if (handle.includes("n")) n[0] = Math.max(0, Math.min(sy2 - 0.03, sy1 + dy));
-          if (handle.includes("s")) n[1] = Math.min(1, Math.max(sy1 + 0.03, sy2 + dy));
-          if (handle.includes("w")) n[2] = Math.max(0, Math.min(sx2 - 0.03, sx1 + dx));
-          if (handle.includes("e")) n[3] = Math.min(1, Math.max(sx1 + 0.03, sx2 + dx));
+          const n = [sy1,sy2,sx1,sx2];
+          if (handle.includes("n")) n[0] = Math.min(curY, sy2-0.03);
+          if (handle.includes("s")) n[1] = Math.max(curY, sy1+0.03);
+          if (handle.includes("w")) n[2] = Math.min(curX, sx2-0.03);
+          if (handle.includes("e")) n[3] = Math.max(curX, sx1+0.03);
           nd[boxIndex] = n;
         }
         return nd;
@@ -873,10 +854,7 @@ export default function BentoCheckerPro() {
     const handleUp = () => setDragState(null);
     window.addEventListener("mousemove", handleMove);
     window.addEventListener("mouseup", handleUp);
-    return () => {
-      window.removeEventListener("mousemove", handleMove);
-      window.removeEventListener("mouseup", handleUp);
-    };
+    return () => { window.removeEventListener("mousemove", handleMove); window.removeEventListener("mouseup", handleUp); };
   }, [dragState]);
 
   const saveAndExitEdit = () => {
