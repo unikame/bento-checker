@@ -790,7 +790,7 @@ export default function BentoCheckerPro() {
       }
 
       const avg = areaResults.reduce((s, r) => s + r.pct, 0) / areaResults.length;
-      const isFail = areaResults.some((r) => r.pct >= 10);
+      const isFail = areaResults.some((r) => r.pct >= 7);
 
       setProgressLabel("総評を生成中...");
       const advice = await generateAdvice(areaResults);
@@ -1175,7 +1175,7 @@ export default function BentoCheckerPro() {
 
               {/* Area Cards */}
               {results.areas.map((area, i) => {
-                const fail = area.pct >= 10;
+                const fail = area.pct >= 7;
                 const frameColors = ["#ff3b30", "#0071e3", "#34c759"]; // 赤・青・緑
                 const frameColor = frameColors[i];
                 return (
