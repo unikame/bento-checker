@@ -656,14 +656,35 @@ JSONのみ: {"all_in_cups": true or false, "items": [{"name": "食材名", "pct"
   if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || `API error ${res.status}`); }
   const data = await res.json();
   const text = data.content?.[0]?.text || "{}";
-  const match = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error("JSON not found");
-  const result = JSON.parse(match[0]);
+
+  // JSONを安全にパース（エラーでもデフォルト値を返す）
+  let result = {};
+  try {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (match) {
+      // 日本語の%文字や特殊文字が含まれる場合があるので修正してからパース
+      const cleaned = match[0]
+        .replace(/：/g, ":")
+        .replace(/，/g, ",")
+        .replace(/（/g, "(")
+        .replace(/）/g, ")")
+        .replace(/,\s*}/g, "}")
+        .replace(/,\s*]/g, "]");
+      result = JSON.parse(cleaned);
+    }
+  } catch (e) {
+    console.warn("[JSON parse error]", e.message, "\ntext:", text.slice(0, 200));
+    // パース失敗時はテキストから数値を抽出して推定
+    const emptyMatch = text.match(/empty_pct["\s:]+(\d+)/);
+    const foodMatch = text.match(/food_total["\s:]+(\d+)/);
+    if (emptyMatch) result.empty_pct = parseInt(emptyMatch[1]);
+    if (foodMatch) result.food_total = parseInt(foodMatch[1]);
+  }
 
   // food_total から空白率を逆算
   const foodTotal = Math.min(100, result.food_total ?? 85);
   const emptyPct = result.all_in_cups === true
-    ? 0  // 全食材がカップに入っていれば0%固定
+    ? 0
     : (result.empty_pct ?? Math.max(0, 100 - foodTotal));
   const itemsDesc = (result.items ?? []).map(it => `${it.name}${it.pct}%`).join("、");
 
