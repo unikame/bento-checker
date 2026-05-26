@@ -606,19 +606,18 @@ async function analyzeArea(b64, areaName) {
 
 【手順】
 1. 画像内の食材・カップ・バランを全て列挙し、各面積%を推定する
-2. 食材が置かれていない「赤茶色のトレー底面が見えている部分」を探す
-   - 特に「食材と食材の間」「食材の横」「区画の端」に注目
-3. 空白面積 = 100% - 食材合計%
+   - 大きな食材（揚げ物・ハンバーグなど）は30〜50%を占めることが多い
+   - 複数の食材が並んでいれば合計で70〜95%になるのが普通
+2. 食材合計%を計算する（通常は70%〜95%程度）
+3. 空白率 = 100% - 食材合計%
+
+【重要】
+- 食材の面積を小さく見積もりすぎないこと
+- カップ・バランも食材面積に含める
+- 容器の側面・縁はカウントしない
 
 【空白としてカウントする】
-- 食材・カップ・バランが何もなく、赤茶色の底面が直接見えている部分
-- 卵焼きの横の空き、食材の上下左右の隙間なども含む
-
-【空白としてカウントしない】
-- 食材の表面・カップ・バランの表面
-- 容器の側面・縁（画像端の斜面部分）
-
-【注意】食材面積は実際に食材が覆っている部分のみ。食材が寄っている場合は反対側の空きをしっかりカウントすること。
+- 食材・カップが何もなく赤茶色の底面が見えている部分のみ
 
 JSONのみ: {"items": [{"name": "食材名", "pct": 面積%}], "food_total": 食材合計%, "empty_pct": 空白率%}`
     : `お弁当の「${areaName}」区画の画像です。この画像が「枠線内の100%」です。
@@ -794,7 +793,7 @@ export default function BentoCheckerPro() {
       }
 
       const avg = areaResults.reduce((s, r) => s + r.pct, 0) / areaResults.length;
-      const isFail = areaResults.some((r) => r.pct >= 7);
+      const isFail = areaResults.some((r) => r.pct >= 10);
 
       setProgressLabel("総評を生成中...");
       const advice = await generateAdvice(areaResults);
@@ -1179,7 +1178,7 @@ export default function BentoCheckerPro() {
 
               {/* Area Cards */}
               {results.areas.map((area, i) => {
-                const fail = area.pct >= 7;
+                const fail = area.pct >= 10;
                 const frameColors = ["#ff3b30", "#0071e3", "#34c759"]; // 赤・青・緑
                 const frameColor = frameColors[i];
                 return (
