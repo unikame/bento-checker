@@ -556,7 +556,7 @@ async function detectTrayEmptyAreas(file, x1r, y1r, x2r, y2r) {
       b >= 12 && b <= 80 &&          // 実測値±2.5σ
       r > g * 1.9 &&                 // 赤が緑より強い（食材茶色を除外）
       r > b * 1.9 &&                 // 赤が青より強い
-      Math.abs(g - b) < 22 &&        // 緑と青が近い（実測: G≈48, B≈46）
+      Math.abs(g - b) < 22 &&        // 緑と青が近い（実測: G?48, B?46）
       saturation > 0.50 &&           // 彩度が十分
       brightness < 100 &&            // 全体的に暗い（明るい側面を除外）
       r < 170;                       // 明るすぎない
@@ -605,9 +605,11 @@ async function analyzeArea(b64, areaName) {
     ? `お弁当の右上メイン区画の画像です。この画像全体が「枠線内の100%」です。
 
 【判定手順】
-1. 画像を頭の中で「左上・右上・左下・右下」の4エリアに分割
-2. 各エリアで食材が占める割合と赤茶色の底面が見える割合を推定
-3. 4エリアの空白率を平均して全体の空白率を算出
+まず画像を頭の中で「左上・右上・左下・右下」の4エリアに分割してください。
+各エリアについて：
+- 食材・カップ・バランが占める割合は何%か
+- 赤茶色の底面が見えている割合は何%か
+を推定し、4エリアの空白率を平均して全体の空白率を出してください。
 
 【空白としてカウントする】
 赤茶色のトレー底面が直接見えている部分のみ
@@ -616,31 +618,44 @@ async function analyzeArea(b64, areaName) {
 - 食材・カップ・バランの表面
 - 容器の側面・縁（画像の端に見える斜面）
 
-【重要な判定基準】
-- 大きな食材1個（揚げ物・ハンバーグ・魚など）＝区画の30〜50%を占める
-- 食材が複数あれば合計70〜95%が普通
-- グリッド分割法：各エリア（1/4）ごとに食材の有無を確認すると精度が上がる
+【重要】
+- 大きな食材（揚げ物・ハンバーグなど）は1個で30?50%を占める
+- 食材が複数あれば合計70?95%が普通
 - 食材が区画の端まで届いていない場合はその分を空白としてカウント
-
-【判定例】
-- ハンバーグ67%+卵焼き8%+せんべい13% = 空白率 12%
-- から揚げ3個（計60%）+ミニトマト2個（計5%） = 空白率 35%
-- ごはんびっしり = 空白率 0〜5%
 
 JSONのみ: {"items": [{"name": "食材名", "pct": 面積%}], "food_total": 食材合計%, "empty_pct": 空白率%}`
     : `お弁当の「${areaName}」区画の画像です。この画像が「枠線内の100%」です。
 
 【判定ルール】
-- カップ内の食材が50%以上填充されている → そのカップは空白なし
-- カップ内の食材が50%未満 → カップ内の空白部分のみカウント（カップの枠や側面は除外）
-- 複数のカップがある場合、各カップを個別に評価
-- カップ間の隙間（構造的な隙間）→ 空白としてカウントしない
-- トレー底面が直接広く見えている部分のみ空白としてカウント
+- 紙カップ・バランの上に食材が乗っている → 空白としてカウントしない
+- カップ間の隙間 → 空白としてカウントしない
+- トレー底面が直接広く見えている部分のみ空白としてカウントする
 
-【判定基準】
-- カップ≥50%填充 = 0%（そのカップは満足）
-- カップ<50%填充 = カップ内の空白部分のみ計上
-- 複数カップの場合 = 各カップの空白を合計して全体に対する割合を算出
+
+- お弁当の「${areaName}」区画の画像です。この画像全体が「枠線内の100%」です。
+
+【判定ルールと手順】
+この区画の「食材とカップ」が占める面積と、「お弁当箱の底面」が露出している面積の割合を判定してください。
+
+【空白としてカウントしないもの（非空白）】
+- 食材そのもの
+- カップ（紙・アルミのヒダヒダ部分）やバランの表面
+※カップの紙部分自体は「食材エリア（非空白）」として扱います。
+
+【空白としてカウントするもの（空白率に計上）】
+- お弁当箱の「トレーの底面（赤茶色などのプラスチック部分）」が直接見えている部分。
+
+【重要：隙間と「明らかな空白」の違い】
+ここが最も重要な判定基準です：
+- わずかな隙間（空白率0?5%）: カップ同士が密接しており、カップ間や壁との間にできる「線状の細い隙間」から底が見えている程度であれば、実質的に区画は埋まっているとみなし、空白率はごく低く（0?5%）してください。
+- 明らかな空白（空白率10%以上）: カップが区画に対して小さく、底面が「面」として広くハッキリと露出している場合は、その露出面積を視覚的に計算し、空白率としてしっかり計上してください。
+
+JSONのみ: {"items": [{"name": "食材・カップ", "pct": 面積%}], "food_total": 食材とカップの合計面積%, "empty_pct": 露出している底面の空白率%}`;
+
+
+
+
+
 
 JSONのみ: {"items": [{"name": "食材名", "pct": 面積%}], "food_total": 合計%, "empty_pct": 空白率%}`;
 
@@ -819,7 +834,7 @@ export default function BentoCheckerPro() {
       }
 
       const avg = areaResults.reduce((s, r) => s + r.pct, 0) / areaResults.length;
-      const isFail = areaResults.some((r) => r.pct >= 6);
+      const isFail = areaResults.some((r) => r.pct >= 10);
 
       setProgressLabel("総評を生成中...");
       const advice = await generateAdvice(areaResults);
@@ -956,7 +971,7 @@ export default function BentoCheckerPro() {
       {/* Header */}
       <div style={{ background: C.card, borderBottom: `1px solid ${C.border}`, padding: "16px 32px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-          <span style={{ fontSize: 32 }}>🍱</span>
+          <span style={{ fontSize: 32 }}>??</span>
           <div>
             <div style={{ fontSize: 20, fontWeight: 600, letterSpacing: "-0.02em" }}>Bento Checker Pro</div>
             <div style={{ fontSize: 12, color: C.textSub, marginTop: 2 }}>AI-Powered Quality Inspection</div>
@@ -966,14 +981,14 @@ export default function BentoCheckerPro() {
           {imgSrc && !editMode && (
             <button onClick={() => setEditMode(true)}
               style={{ background: "#0071e3", border: "none", color: "white", borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 500 }}>
-              ✏️ 枠を調整
+              ?? 枠を調整
             </button>
           )}
           {editMode && (
             <>
               <button onClick={saveAndExitEdit}
                 style={{ background: "#34c759", border: "none", color: "white", borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
-                ✓ 保存して終了
+                ? 保存して終了
               </button>
               <button onClick={resetSavedCoords}
                 style={{ background: "transparent", border: `1px solid ${C.border}`, color: C.textSub, borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14 }}>
@@ -982,7 +997,7 @@ export default function BentoCheckerPro() {
             </>
           )}
           <label style={{ background: emptyTrayData ? "#34c759" : "#f5a623", color: "white", border: "none", borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 500 }}>
-            📦 {emptyTrayData ? "空箱登録済み" : "空箱を登録"}
+            ?? {emptyTrayData ? "空箱登録済み" : "空箱を登録"}
             <input type="file" accept="image/*" style={{ display: "none" }} ref={emptyTrayRef}
               onChange={(e) => { if (e.target.files[0]) registerEmptyTray(e.target.files[0]); e.target.value=""; }} />
           </label>
@@ -990,13 +1005,13 @@ export default function BentoCheckerPro() {
             onClick={() => setDebugMode(!debugMode)}
             style={{ background: debugMode ? "#f5a623" : "transparent", border: `1px solid ${debugMode ? "#f5a623" : C.border}`, color: debugMode ? "white" : C.text, borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 500 }}
           >
-            🔍 デバッグ {debugMode ? "ON" : "OFF"}
+            ?? デバッグ {debugMode ? "ON" : "OFF"}
           </button>
           <button
             onClick={() => setViewHistory(!viewHistory)}
             style={{ background: "transparent", border: `1px solid ${C.border}`, color: C.text, borderRadius: 20, padding: "8px 18px", cursor: "pointer", fontSize: 14, fontWeight: 500 }}
           >
-            📋 履歴 ({history.length})
+            ?? 履歴 ({history.length})
           </button>
         </div>
       </div>
@@ -1011,7 +1026,7 @@ export default function BentoCheckerPro() {
               onClick={() => fileRef.current?.click()}
               style={{ background: C.card, border: `2px dashed ${C.border}`, borderRadius: 20, padding: "80px 40px", textAlign: "center", cursor: "pointer", transition: "all 0.2s" }}
             >
-              <div style={{ fontSize: 64, marginBottom: 20 }}>📷</div>
+              <div style={{ fontSize: 64, marginBottom: 20 }}>??</div>
               <div style={{ color: C.text, fontSize: 18, fontWeight: 500, marginBottom: 8 }}>お弁当の写真をドロップ</div>
               <div style={{ color: C.textSub, fontSize: 14 }}>またはクリックして選択</div>
               <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files[0])} />
@@ -1051,7 +1066,7 @@ export default function BentoCheckerPro() {
                         padding: "3px 10px",
                         borderRadius: 4,
                       }}>
-                        🔍 OpenCV検出: 容器の外枠
+                        ?? OpenCV検出: 容器の外枠
                       </div>
                     </div>
                   )}
@@ -1126,10 +1141,10 @@ export default function BentoCheckerPro() {
                       letterSpacing: 0.5,
                     }}
                   >
-                    ▶ 解析開始
+                    ? 解析開始
                   </button>
                   <div style={{ marginTop: 10, color: C.textSub, fontSize: 13 }}>
-                    枠がズレている場合は「✏️ 枠を調整」で修正してから解析してください
+                    枠がズレている場合は「?? 枠を調整」で修正してから解析してください
                   </div>
                 </div>
               )}
@@ -1148,7 +1163,7 @@ export default function BentoCheckerPro() {
 
               {error && (
                 <div style={{ marginTop: 24, background: C.dangerBg, border: `1px solid ${C.danger}`, borderRadius: 12, padding: 16, color: C.danger, fontSize: 14 }}>
-                  ⚠️ {error}
+                  ?? {error}
                 </div>
               )}
 
@@ -1158,7 +1173,7 @@ export default function BentoCheckerPro() {
                     onClick={() => { setResults(null); setError(null); }}
                     style={{ background: "transparent", color: C.accent, border: `2px solid ${C.accent}`, borderRadius: 30, padding: "14px 32px", cursor: "pointer", fontSize: 15, fontWeight: 500 }}
                   >
-                    🔄 再解析
+                    ?? 再解析
                   </button>
                   <button
                     onClick={reset}
@@ -1243,7 +1258,7 @@ export default function BentoCheckerPro() {
                   boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
                 }}>
                   <div style={{ fontSize: 14, color: "#8a6d00", marginBottom: 10, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
-                    💡 総評・改善アドバイス
+                    ?? 総評・改善アドバイス
                   </div>
                   <div style={{ fontSize: 15, color: C.text, lineHeight: 1.7 }}>{results.advice}</div>
                 </div>
