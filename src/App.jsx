@@ -834,7 +834,7 @@ export default function BentoCheckerPro() {
       }
 
       const avg = areaResults.reduce((s, r) => s + r.pct, 0) / areaResults.length;
-      const isFail = areaResults.some((r) => r.pct >= 6);
+      const isFail = areaResults.some((r) => r.pct >= 10);
 
       setProgressLabel("総評を生成中...");
       const advice = await generateAdvice(areaResults);
