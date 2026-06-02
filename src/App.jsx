@@ -626,15 +626,25 @@ async function analyzeArea(b64, areaName) {
 JSONのみ: {"items": [{"name": "食材名", "pct": 面積%}], "food_total": 食材合計%, "empty_pct": 空白率%}`
     : `お弁当の「${areaName}」区画の画像です。この画像が「枠線内の100%」です。
 
-【判定ルール】
-- 紙カップ・バランの上に食材が乗っている → 空白としてカウントしない
-- カップ間の隙間 → 空白としてカウントしない
-- トレー底面が直接広く見えている部分のみ空白としてカウントする
+この副菜区画を以下の観点で評価してください。
 
-ほとんどの場合、副菜はカップに入っているため空白率は0%になります。
-食材が全くなくトレー底面が広く見えている場合のみ空白率を計上してください。
+【空白率の計算方法】
+1. 紙カップ・バランが区画に占める面積を確認する
+2. 各カップの中に食材が何%充填されているか確認する
+3. 以下の場合を空白としてカウントする：
+   - カップの中の食材が半分以下（充填率50%未満）→ そのカップの面積の半分を空白とする
+   - 食材が直接トレーに置かれておらずトレー底面が見えている部分
 
-JSONのみ: {"items": [{"name": "食材名", "pct": 面積%}], "food_total": 合計%, "empty_pct": 空白率%}`;
+【カウントしない（空白としない）】
+- カップ間の隙間（構造上必ず発生するため除外）
+- カップの中に食材がしっかり入っている部分（充填率50%以上）
+
+【判定例】
+- カップが3つあり全て食材でいっぱい → 空白率0%
+- カップが3つあり1つに半分しか食材がない → 空白率約10〜15%
+- カップがあるが中身がほぼない → 空白率高め
+
+JSONのみ: {"items": [{"name": "食材/カップ名", "fill_rate": 充填率%, "pct": 区画面積%}], "food_total": 有効食材合計%, "empty_pct": 空白率%}`;
 
   const res = await fetch("/api/analyze", {
     method: "POST",
@@ -679,7 +689,10 @@ JSONのみ: {"items": [{"name": "食材名", "pct": 面積%}], "food_total": 合
   // food_total から空白率を逆算
   const foodTotal = Math.min(100, result.food_total ?? 85);
   const emptyPct = result.empty_pct ?? Math.max(0, 100 - foodTotal);
-  const itemsDesc = (result.items ?? []).map(it => `${it.name}${it.pct}%`).join("、");
+  const itemsDesc = (result.items ?? []).map(it => {
+    const fill = it.fill_rate !== undefined ? ` 充填${it.fill_rate}%` : "";
+    return `${it.name}${it.pct}%${fill}`;
+  }).join("、");
 
   return {
     pct: Math.max(0, Math.min(100, Math.round(emptyPct))),
