@@ -15,8 +15,14 @@ const DEFAULT_CROP_DEFS = [
 
 // メイン区画の空白率を圧縮する係数（体感より高めに出るため）
 const MAIN_SCALE = 0.7;
+// メイン区画の空白率の上限（％）。空きが大きくてもこの値でキャップする
+const MAIN_CAP = 13;
+// メイン区画の空白率の下限（％）。空きがある時はこの値以上にしてNG判定を維持
+const MAIN_FLOOR = 10;
 // FAIL判定の閾値（％）
 const FAIL_THRESHOLD = 10;
+// メイン区画で「空きあり」とみなす生スコアの閾値（％）。これ未満ならFLOORを適用せず素直に低く出す
+const MAIN_EMPTY_TRIGGER = 12;
 
 // 保存された座標をlocalStorageから読み込み
 function loadSavedCropDefs() {
@@ -138,6 +144,18 @@ async function calcEmptyRateByPixel(file, x1r, y1r, x2r, y2r, isSub = false) {
 
   console.log(`[PixelCalc]${isSub ? "[副菜]" : "[メイン]"} 空白率=${rate}% (${emptyCount}/${total}px)`);
   return { rate, count: emptyCount, boxes };
+}
+
+// メイン区画の生スコアを表示用に変換（係数→下限→上限の順）
+function adjustMainPct(rawRate) {
+  let p = Math.round(rawRate * MAIN_SCALE);
+  // 明らかに空きがある（生スコアが高い）場合は下限を適用してNG判定を維持
+  if (rawRate >= MAIN_EMPTY_TRIGGER) {
+    p = Math.max(p, MAIN_FLOOR);
+  }
+  // 上限でキャップ
+  p = Math.min(p, MAIN_CAP);
+  return p;
 }
 
 async function cropFileToBase64(file, x1r, y1r, x2r, y2r) {
@@ -312,10 +330,10 @@ export default function BentoCheckerPro() {
         const isSub = AREAS[i].key !== "main";
         const pixel = await calcEmptyRateByPixel(targetFile, x1r, y1r, x2r, y2r, isSub);
 
-        // メイン区画の空白率は体感より高めに出るため係数で圧縮
+        // メイン区画は係数・下限・上限で表示用に補正
         let finalPct = pixel.rate;
         if (AREAS[i].key === "main") {
-          finalPct = Math.round(pixel.rate * MAIN_SCALE);
+          finalPct = adjustMainPct(pixel.rate);
         }
 
         // 食材名のみAIに取得させる（数値に影響しないので1回でOK）
