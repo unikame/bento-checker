@@ -1,5 +1,4 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import cv from "@techstark/opencv-js";
 
 const AREAS = [
   { name: "右上（メイン）", key: "main" },
@@ -13,23 +12,6 @@ const DEFAULT_CROP_DEFS = [
   [0.109, 0.409, 0.159, 0.345],  // 左上（副菜A）
   [0.546, 0.905, 0.712, 0.917],  // 右下（副菜B）
 ];
-
-// OpenCV.jsの準備を待つ
-function waitForOpenCV() {
-  return new Promise((resolve) => {
-    if (cv && cv.Mat) {
-      resolve();
-      return;
-    }
-    const check = setInterval(() => {
-      if (cv && cv.Mat) {
-        clearInterval(check);
-        resolve();
-      }
-    }, 100);
-    setTimeout(() => { clearInterval(check); resolve(); }, 15000);
-  });
-}
 
 // 保存された座標をlocalStorageから読み込み
 function loadSavedCropDefs() {
@@ -53,7 +35,8 @@ function saveCropDefs(cropDefs) {
 }
 
 // 枠内の底面色をピクセル検出して空白率を計算（数値判定はこれに一本化）
-async function calcEmptyRateByPixel(file, x1r, y1r, x2r, y2r) {
+// isSub: 副菜区画（カップ入り）なら true → カップ外（外周）の底面を空白から除外
+async function calcEmptyRateByPixel(file, x1r, y1r, x2r, y2r, isSub = false) {
   const bitmap = await createImageBitmap(file);
   const sw = bitmap.width;
   const sh = bitmap.height;
@@ -81,7 +64,7 @@ async function calcEmptyRateByPixel(file, x1r, y1r, x2r, y2r) {
   // - G と B が近い（|G-B| < 30）→ 純粋な赤茶色
   // - G < 85, B < 85 → 食材の茶色を除外
   const mask = new Uint8Array(total);
-  let emptyCount = 0;
+  let bottomCount = 0;
   for (let i = 0; i < total; i++) {
     const r = data[i * 4];
     const g = data[i * 4 + 1];
@@ -94,13 +77,36 @@ async function calcEmptyRateByPixel(file, x1r, y1r, x2r, y2r) {
       g < 85 && b < 85
     ) {
       mask[i] = 1;
-      emptyCount++;
+      bottomCount++;
     }
+  }
+
+  let emptyCount = bottomCount;
+
+  // 副菜区画: カップの外側（容器の底）の赤茶色は「仕方ない隙間」として除外する。
+  // カップは区画の中央寄りにあるため、外周に固まっている底面色はカップ外とみなして無視する。
+  if (isSub) {
+    const marginX = Math.floor(ow * 0.15); // 外周15%はカップ外とみなして除外
+    const marginY = Math.floor(oh * 0.15);
+    let innerBottom = 0;
+    for (let y = 0; y < oh; y++) {
+      for (let x = 0; x < ow; x++) {
+        const idx = y * ow + x;
+        if (!mask[idx]) continue;
+        const isOuter = x < marginX || x >= ow - marginX || y < marginY || y >= oh - marginY;
+        if (isOuter) {
+          mask[idx] = 0; // 外周の底面は空白から除外
+        } else {
+          innerBottom++;
+        }
+      }
+    }
+    emptyCount = innerBottom;
   }
 
   const rate = Math.round(emptyCount / total * 100);
 
-  // 底面が集中しているブロックを「空きボックス」として抽出（画像上に表示用）
+  // 底面が集中しているブロックを「空きボックス」として抽出（デバッグ表示用）
   const gridSize = 10;
   const cellW = Math.floor(ow / gridSize);
   const cellH = Math.floor(oh / gridSize);
@@ -125,7 +131,7 @@ async function calcEmptyRateByPixel(file, x1r, y1r, x2r, y2r) {
     }
   }
 
-  console.log(`[PixelCalc] 空白率=${rate}% (${emptyCount}/${total}px)`);
+  console.log(`[PixelCalc]${isSub ? "[副菜]" : "[メイン]"} 空白率=${rate}% (${emptyCount}/${total}px)`);
   return { rate, count: emptyCount, boxes };
 }
 
@@ -297,8 +303,9 @@ export default function BentoCheckerPro() {
 
         const [y1r, y2r, x1r, x2r] = usedCropDefs[i];
 
-        // 空白率はピクセル検出で機械的に算出（AIに任せない＝同じ写真は常に同じ数値）
-        const pixel = await calcEmptyRateByPixel(targetFile, x1r, y1r, x2r, y2r);
+        // メインは底面そのまま、副菜はカップ外の底面を除外して判定
+        const isSub = AREAS[i].key !== "main";
+        const pixel = await calcEmptyRateByPixel(targetFile, x1r, y1r, x2r, y2r, isSub);
 
         // 食材名のみAIに取得させる（数値に影響しないので1回でOK）
         const b64 = await cropFileToBase64(targetFile, x1r, y1r, x2r, y2r);
