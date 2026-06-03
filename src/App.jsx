@@ -13,6 +13,11 @@ const DEFAULT_CROP_DEFS = [
   [0.546, 0.905, 0.712, 0.917],  // 右下（副菜B）
 ];
 
+// メイン区画の空白率を圧縮する係数（体感より高めに出るため）
+const MAIN_SCALE = 0.7;
+// FAIL判定の閾値（％）
+const FAIL_THRESHOLD = 10;
+
 // 保存された座標をlocalStorageから読み込み
 function loadSavedCropDefs() {
   try {
@@ -303,12 +308,11 @@ export default function BentoCheckerPro() {
 
         const [y1r, y2r, x1r, x2r] = usedCropDefs[i];
 
-// メインは底面そのまま、副菜はカップ外の底面を除外して判定
+        // メインは底面そのまま、副菜はカップ外の底面を除外して判定
         const isSub = AREAS[i].key !== "main";
         const pixel = await calcEmptyRateByPixel(targetFile, x1r, y1r, x2r, y2r, isSub);
 
-        // メイン区画の空白率は体感より高めに出るため係数で圧縮（0.7倍）
-        const MAIN_SCALE = 0.7;
+        // メイン区画の空白率は体感より高めに出るため係数で圧縮
         let finalPct = pixel.rate;
         if (AREAS[i].key === "main") {
           finalPct = Math.round(pixel.rate * MAIN_SCALE);
@@ -330,10 +334,9 @@ export default function BentoCheckerPro() {
           reason: aiReason,
           empty_boxes: pixel.boxes || [],
         });
+      }
 
       const avg = areaResults.reduce((s, r) => s + r.pct, 0) / areaResults.length;
-      // FAIL判定の閾値（必要に応じてここを調整）
-      const FAIL_THRESHOLD = 10;
       const isFail = areaResults.some((r) => r.pct >= FAIL_THRESHOLD);
 
       setProgressLabel("総評を生成中...");
@@ -659,7 +662,7 @@ export default function BentoCheckerPro() {
               </div>
 
               {results.areas.map((area, i) => {
-                const fail = area.pct >= 10;
+                const fail = area.pct >= FAIL_THRESHOLD;
                 const frameColors = ["#ff3b30", "#0071e3", "#34c759"];
                 const frameColor = frameColors[i];
                 return (
