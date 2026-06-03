@@ -303,9 +303,16 @@ export default function BentoCheckerPro() {
 
         const [y1r, y2r, x1r, x2r] = usedCropDefs[i];
 
-        // メインは底面そのまま、副菜はカップ外の底面を除外して判定
+// メインは底面そのまま、副菜はカップ外の底面を除外して判定
         const isSub = AREAS[i].key !== "main";
         const pixel = await calcEmptyRateByPixel(targetFile, x1r, y1r, x2r, y2r, isSub);
+
+        // メイン区画の空白率は体感より高めに出るため係数で圧縮（0.7倍）
+        const MAIN_SCALE = 0.7;
+        let finalPct = pixel.rate;
+        if (AREAS[i].key === "main") {
+          finalPct = Math.round(pixel.rate * MAIN_SCALE);
+        }
 
         // 食材名のみAIに取得させる（数値に影響しないので1回でOK）
         const b64 = await cropFileToBase64(targetFile, x1r, y1r, x2r, y2r);
@@ -319,11 +326,10 @@ export default function BentoCheckerPro() {
 
         areaResults.push({
           ...AREAS[i],
-          pct: pixel.rate,
+          pct: finalPct,
           reason: aiReason,
           empty_boxes: pixel.boxes || [],
         });
-      }
 
       const avg = areaResults.reduce((s, r) => s + r.pct, 0) / areaResults.length;
       // FAIL判定の閾値（必要に応じてここを調整）
